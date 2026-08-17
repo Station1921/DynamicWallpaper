@@ -1,0 +1,88 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text.Json;
+using DynamicWallpaper.Models;
+using Microsoft.Win32;
+
+namespace DynamicWallpaper.Core
+{
+    public class Config
+    {
+        public bool Mute { get; set; } = true;
+        public bool PauseOnFullscreen { get; set; } = true;
+        public bool PauseOnBattery { get; set; } = true;
+        public bool PerformanceMode { get; set; } = false;
+        public bool RunOnStartup { get; set; } = false;
+        public bool CloseToTray { get; set; } = true;
+        public List<string> Library { get; set; } = new();
+
+        /// <summary>每屏壁纸分配（持久化，重启后自动恢复）。</summary>
+        public List<ScreenAssignment> Assignments { get; set; } = new();
+
+        /// <summary>“设为”按钮默认应用到的目标屏：0=主屏，1..n=对应屏幕，-1=所有屏幕。</summary>
+        public int DefaultScreen { get; set; } = 0;
+
+        /// <summary>程序启动前系统原本的静态壁纸路径（备用：当注册表值被清空时使用）。</summary>
+        public string OriginalWallpaper { get; set; } = "";
+
+        private static readonly string FilePath =
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DynamicWallpaper", "config.json");
+
+        public static Config Load()
+        {
+            try
+            {
+                if (File.Exists(FilePath))
+                {
+                    var json = File.ReadAllText(FilePath);
+                    var cfg = JsonSerializer.Deserialize<Config>(json);
+                    if (cfg != null) return cfg;
+                }
+            }
+            catch { }
+            return new Config();
+        }
+
+        public void Save()
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
+                File.WriteAllText(FilePath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+                ApplyStartup();
+            }
+            catch { }
+        }
+
+        private void ApplyStartup()
+        {
+            try
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(RunKey, true);
+                if (key == null) return;
+                if (RunOnStartup)
+                {
+                    var exe = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
+                    if (!string.IsNullOrEmpty(exe)) key.SetValue(AppName, exe);
+                }
+                else
+                {
+                    key.DeleteValue(AppName, false);
+                }
+            }
+            catch { }
+        }
+
+        private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        private const string AppName = "DynamicWallpaper";
+    }
+
+    /// <summary>单屏壁纸分配记录（可序列化）。</summary>
+    public class ScreenAssignment
+    {
+        public int Index { get; set; }
+        public string Path { get; set; } = "";
+        public WallpaperType Type { get; set; }
+    }
+}

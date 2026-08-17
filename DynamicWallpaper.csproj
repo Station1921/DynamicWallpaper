@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>DynamicWallpaper</AssemblyName>
+    <RootNamespace>DynamicWallpaper</RootNamespace>
+    <AssemblyTitle>动态桌面</AssemblyTitle>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <PublishSingleFile>false</PublishSingleFile>
+    <ApplicationIcon>Assets\appicon.ico</ApplicationIcon>
+
+    <!--
+      构建中间产物(obj/bin)默认放在工程目录下，本机有文件监视器/杀软会锁定
+      MarkupCompilePass1 生成的 .cache 文件，导致“Access to the path '...MarkupCompile.cache' is denied”而编译失败。
+      把 obj/bin 重定向到 %LOCALAPPDATA% 之外的临时目录，避开被监视的工程目录即可正常编译。
+    -->
+    <BaseIntermediateOutputPath>$(LocalAppData)\DynamicWallpaperBuild\obj\</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(LocalAppData)\DynamicWallpaperBuild\bin\</BaseOutputPath>
+
+    <!-- 禁用 Roslyn 共享编译服务器，避免其常驻进程锁定 obj 下的 .cache 导致重复构建时报 Access Denied -->
+    <UseSharedCompilation>false</UseSharedCompilation>
+  </PropertyGroup>
+
+  <!-- 网页壁纸为独立可选模块，排除出主工程编译（避免主工程依赖 WebView2） -->
+  <ItemGroup>
+    <Compile Remove="DynamicWallpaper.Web\**" />
+    <Page Remove="DynamicWallpaper.Web\**" />
+    <ApplicationDefinition Remove="DynamicWallpaper.Web\**" />
+  </ItemGroup>
+
+  <!-- netbian 等中文壁纸站使用 GBK 编码，.NET 8 默认不支持 GBK，需要 CodePages 提供程序 -->
+  <ItemGroup>
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
+  </ItemGroup>
+
+  <!-- 程序图标源文件（appicon.ico 通过 ApplicationIcon 作为原生图标嵌入 EXE，
+       运行时由 Icon.ExtractAssociatedIcon 取出，用于窗口标题栏与托盘；不再依赖 WPF pack 资源 -->
+  <ItemGroup>
+    <None Include="Assets\appicon.png" />
+  </ItemGroup>
+
+</Project>
