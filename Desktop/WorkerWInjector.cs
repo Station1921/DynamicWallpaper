@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Threading;
+using DynamicWallpaper.Core;
 using DynamicWallpaper.Desktop;
 
 namespace DynamicWallpaper.Desktop
@@ -18,38 +19,75 @@ namespace DynamicWallpaper.Desktop
         /// </summary>
         public static IntPtr AcquireWorkerW(Rectangle screenBounds)
         {
+            Logger.Log($"[WorkerW] 开始获取 WorkerW，目标屏幕: {screenBounds}");
+
             // 1) 已有且仍然有效的 WorkerW 直接复用
             var existing = FindOrphanWorkerW(screenBounds);
-            if (existing != IntPtr.Zero) return existing;
+            if (existing != IntPtr.Zero)
+            {
+                Logger.Log($"[WorkerW] 复用已有 WorkerW: 0x{existing.ToInt64():X}");
+                return existing;
+            }
 
-            // 2) 经典桌面树定位：找到包含桌面图标的窗口，再取它 Z 序下方的 WorkerW。
-            //    这是 Win10/Win11 最稳的方式，不依赖屏幕矩形匹配。
-            var byTree = FindWallpaperWorkerWByDesktopTree();
-            if (byTree != IntPtr.Zero) return byTree;
-
-            // 3) 仍没找到：向 Progman 发 0x052C 强制桌面重建 WorkerW，然后轮询等待
             var progman = Win32.FindWindow("Progman", null);
+            Logger.Log($"[WorkerW] Progman=0x{progman.ToInt64():X}");
+
+            // 2) 向 Progman 发 0x052C 强制桌面重建/暴露 WorkerW。
+            //    很多 Win10/Win11 上只有发了这条消息后壁纸层 WorkerW 才会出现。
             if (progman != IntPtr.Zero)
             {
                 Win32.SendMessageTimeout(progman, Win32.WM_SPAWN_WORKER,
                     IntPtr.Zero, IntPtr.Zero,
                     Win32.SMTO_NORMAL, 1000, out _);
+                Logger.Log("[WorkerW] 已发送 0x052C 触发 WorkerW 生成");
+            }
+            else
+            {
+                Logger.Log("[WorkerW] 警告：未找到 Progman");
+            }
 
-                // 轮询最多 5 秒：很多 Win11 机器上 WorkerW 是异步生成的
-                for (int i = 0; i < 50; i++)
+            // 3) 轮询最多 8 秒（Win11 上 WorkerW 是异步生成的，100ms 不够）。
+            //    每次同时尝试多种定位策略，提高兼容性。
+            for (int i = 0; i < 80; i++)
+            {
+                Thread.Sleep(100);
+
+                // 策略 A：Progman 的直接子窗口里的 WorkerW（Win11 常见结构）。
+                var w = FindWorkerWUnderProgman(progman);
+                if (w != IntPtr.Zero)
                 {
-                    Thread.Sleep(100);
+                    Logger.Log($"[WorkerW] 通过 Progman 子窗口找到: 0x{w.ToInt64():X}（第{i}次轮询）");
+                    return w;
+                }
 
-                    byTree = FindWallpaperWorkerWByDesktopTree();
-                    if (byTree != IntPtr.Zero) return byTree;
+                // 策略 B：经典桌面树定位。
+                w = FindWallpaperWorkerWByDesktopTree();
+                if (w != IntPtr.Zero)
+                {
+                    Logger.Log($"[WorkerW] 通过桌面树定位找到: 0x{w.ToInt64():X}（第{i}次轮询）");
+                    return w;
+                }
 
-                    existing = FindOrphanWorkerW(screenBounds);
-                    if (existing != IntPtr.Zero) return existing;
+                // 策略 C：按屏幕矩形匹配所有 WorkerW（不依赖层级，兼容各种变体）。
+                w = FindWorkerWByRect(screenBounds);
+                if (w != IntPtr.Zero)
+                {
+                    Logger.Log($"[WorkerW] 通过矩形匹配找到: 0x{w.ToInt64():X}（第{i}次轮询）");
+                    return w;
+                }
+
+                // 策略 D：任意不带图标的 WorkerW。
+                w = FindAnyOrphanWorkerW();
+                if (w != IntPtr.Zero)
+                {
+                    Logger.Log($"[WorkerW] 通过任意孤儿 WorkerW 找到: 0x{w.ToInt64():X}（第{i}次轮询）");
+                    return w;
                 }
             }
 
-            // 4) 最后兜底：不看矩形、只看是不是孤儿 WorkerW
-            return FindAnyOrphanWorkerW();
+            Logger.Log("[WorkerW] 错误：所有策略均未找到 WorkerW");
+            LogWorkerWState();
+            return IntPtr.Zero;
         }
 
         /// <summary>
@@ -122,9 +160,26 @@ namespace DynamicWallpaper.Desktop
         private static bool IsOrphanWorkerW(IntPtr hWnd)
         {
             if (Win32.GetClassName(hWnd) != "WorkerW") return false;
-            if (!Win32.IsWindowVisible(hWnd)) return false;
+            // 注意：不再要求 IsWindowVisible。某些 Win11 系统上 WorkerW 创建后暂时不可见，
+            // 或 DWM 判定不可见，但它仍然可以承载壁纸。
             if (Win32.HasShellDefViewDescendant(hWnd)) return false;
             return true;
+        }
+
+        /// <summary>
+        /// 在 Progman 的直接子窗口中查找 WorkerW（Win11 常见结构）。
+        /// 返回不含 SHELLDLL_DefView 的那个 WorkerW（即壁纸层）。
+        /// </summary>
+        private static IntPtr FindWorkerWUnderProgman(IntPtr progman)
+        {
+            if (progman == IntPtr.Zero) return IntPtr.Zero;
+            IntPtr child = IntPtr.Zero;
+            while ((child = Win32.FindWindowEx(progman, child, "WorkerW", null)) != IntPtr.Zero)
+            {
+                if (!Win32.HasShellDefViewDescendant(child))
+                    return child;
+            }
+            return IntPtr.Zero;
         }
 
         /// <summary>
@@ -158,10 +213,35 @@ namespace DynamicWallpaper.Desktop
             return IsOrphanWorkerW(candidate) ? candidate : IntPtr.Zero;
         }
 
+        /// <summary>
+        /// 按屏幕矩形中心距离匹配所有 WorkerW。
+        /// 不依赖桌面树结构，兼容 Progman/顶层/子窗口各种变体。
+        /// </summary>
+        private static IntPtr FindWorkerWByRect(Rectangle screenBounds)
+        {
+            var candidates = new List<(IntPtr hwnd, double dist)>();
+            Win32.EnumWindows((hwnd, _) =>
+            {
+                if (!IsOrphanWorkerW(hwnd)) return true;
+                if (!Win32.GetWindowRect(hwnd, out Win32.RECT r)) return true;
+
+                int wcx = r.Left + r.Width / 2;
+                int wcy = r.Top + r.Height / 2;
+                int cx = screenBounds.Left + screenBounds.Width / 2;
+                int cy = screenBounds.Top + screenBounds.Height / 2;
+                double dist = Math.Pow(wcx - cx, 2) + Math.Pow(wcy - cy, 2);
+                candidates.Add((hwnd, dist));
+                return true;
+            }, IntPtr.Zero);
+
+            if (candidates.Count == 0) return IntPtr.Zero;
+            candidates.Sort((a, b) => a.dist.CompareTo(b.dist));
+            return candidates[0].hwnd;
+        }
+
         private static IntPtr FindOrphanWorkerW(Rectangle screenBounds)
         {
             var orphans = new List<IntPtr>();
-            var currentPid = Process.GetCurrentProcess().Id;
 
             Win32.EnumWindows((hwnd, _) =>
             {
@@ -172,19 +252,7 @@ namespace DynamicWallpaper.Desktop
 
             if (orphans.Count == 0) return IntPtr.Zero;
 
-            // 优先：矩形完全相等且没有本进程子窗口（更干净）
-            foreach (var h in orphans)
-            {
-                if (HasOurChild(h, currentPid)) continue;
-                if (Win32.GetWindowRect(h, out Win32.RECT r) &&
-                    r.Left == screenBounds.Left && r.Top == screenBounds.Top &&
-                    r.Right == screenBounds.Right && r.Bottom == screenBounds.Bottom)
-                {
-                    return h;
-                }
-            }
-
-            // 次优先：矩形完全相等（即使有我们旧的子窗口，Attach 时会清理）
+            // 优先：矩形完全相等
             foreach (var h in orphans)
             {
                 if (Win32.GetWindowRect(h, out Win32.RECT r) &&
@@ -203,8 +271,8 @@ namespace DynamicWallpaper.Desktop
             foreach (var h in orphans)
             {
                 if (!Win32.GetWindowRect(h, out Win32.RECT r)) continue;
-                int wcx = r.Left + (r.Right - r.Left) / 2;
-                int wcy = r.Top + (r.Bottom - r.Top) / 2;
+                int wcx = r.Left + r.Width / 2;
+                int wcy = r.Top + r.Height / 2;
                 bool inside = wcx >= screenBounds.Left && wcx <= screenBounds.Right &&
                               wcy >= screenBounds.Top && wcy <= screenBounds.Bottom;
                 double dist = Math.Pow(wcx - cx, 2) + Math.Pow(wcy - cy, 2);
@@ -231,20 +299,19 @@ namespace DynamicWallpaper.Desktop
             return found;
         }
 
-        private static bool HasOurChild(IntPtr workerw, int currentPid)
+        /// <summary>记录当前所有 WorkerW 的句柄、矩形、可见性、是否含图标，用于诊断。</summary>
+        private static void LogWorkerWState()
         {
-            bool found = false;
-            Win32.EnumChildWindows(workerw, (child, _) =>
+            Logger.Log("[WorkerW] 当前 WorkerW 状态快照:");
+            Win32.EnumWindows((hwnd, _) =>
             {
-                Win32.GetWindowThreadProcessId(child, out uint pid);
-                if ((int)pid == currentPid)
-                {
-                    found = true;
-                    return false;
-                }
+                if (Win32.GetClassName(hwnd) != "WorkerW") return true;
+                Win32.GetWindowRect(hwnd, out Win32.RECT r);
+                bool visible = Win32.IsWindowVisible(hwnd);
+                bool hasShell = Win32.HasShellDefViewDescendant(hwnd);
+                Logger.Log($"  WorkerW 0x{hwnd.ToInt64():X}: rect=({r.Left},{r.Top},{r.Right},{r.Bottom}), visible={visible}, hasShell={hasShell}");
                 return true;
             }, IntPtr.Zero);
-            return found;
         }
     }
 }
