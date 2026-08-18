@@ -27,7 +27,9 @@ namespace DynamicWallpaper.Providers
             WindowStyle = WindowStyle.None;
             ResizeMode = ResizeMode.NoResize;
             ShowInTaskbar = false;
-            Background = Brushes.Black;
+            // 透明背景：内容（视频/图片）未铺满或正在卸载时，露出的不是黑块，
+            // 而是下方透过来的系统静态壁纸，避免“解除时黑屏闪一下”。
+            Background = Brushes.Transparent;
             RootGrid = new Grid();
             Content = RootGrid;
             Width = 1920;
