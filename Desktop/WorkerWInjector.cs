@@ -21,11 +21,11 @@ namespace DynamicWallpaper.Desktop
         {
             Logger.Log($"[WorkerW] 开始获取 WorkerW，目标屏幕: {screenBounds}");
 
-            // 1) 已有且仍然有效的 WorkerW 直接复用
+            // 1) 已有且仍然有效、可见的 WorkerW 直接复用
             var existing = FindOrphanWorkerW(screenBounds);
             if (existing != IntPtr.Zero)
             {
-                Logger.Log($"[WorkerW] 复用已有 WorkerW: 0x{existing.ToInt64():X}");
+                Logger.Log($"[WorkerW] 复用已有可见 WorkerW: 0x{existing.ToInt64():X}");
                 return existing;
             }
 
@@ -76,11 +76,19 @@ namespace DynamicWallpaper.Desktop
                     return w;
                 }
 
-                // 策略 D：任意不带图标的 WorkerW。
+                // 策略 D：任意可见的孤儿 WorkerW。
                 w = FindAnyOrphanWorkerW();
                 if (w != IntPtr.Zero)
                 {
-                    Logger.Log($"[WorkerW] 通过任意孤儿 WorkerW 找到: 0x{w.ToInt64():X}（第{i}次轮询）");
+                    Logger.Log($"[WorkerW] 通过任意可见孤儿 WorkerW 找到: 0x{w.ToInt64():X}（第{i}次轮询）");
+                    return w;
+                }
+
+                // 策略 E：任意隐藏的孤儿 WorkerW（最后兜底）。
+                w = FindAnyOrphanWorkerWAllowHidden();
+                if (w != IntPtr.Zero)
+                {
+                    Logger.Log($"[WorkerW] 通过隐藏孤儿 WorkerW 找到: 0x{w.ToInt64():X}（第{i}次轮询），将强制显示");
                     return w;
                 }
             }
@@ -99,6 +107,13 @@ namespace DynamicWallpaper.Desktop
 
             // 先清理该 WorkerW 上本程序旧的渲染窗口，防止叠加成“两张壁纸”
             DetachChildren(workerwHwnd);
+
+            // 确保 WorkerW 本身可见，否则子窗口无法显示出来
+            if (!Win32.IsWindowVisible(workerwHwnd))
+            {
+                Logger.Log($"[WorkerW] Attach 前 WorkerW 不可见，强制 ShowWindow: 0x{workerwHwnd.ToInt64():X}");
+                Win32.ShowWindow(workerwHwnd, Win32.SW_SHOW);
+            }
 
             Win32.SetParent(childHwnd, workerwHwnd);
 
@@ -157,17 +172,25 @@ namespace DynamicWallpaper.Desktop
             catch { /* ignore */ }
         }
 
+        /// <summary>判断是否为可见的、可用于壁纸的 WorkerW。</summary>
         private static bool IsOrphanWorkerW(IntPtr hWnd)
         {
             if (Win32.GetClassName(hWnd) != "WorkerW") return false;
-            // 注意：不再要求 IsWindowVisible。某些 Win11 系统上 WorkerW 创建后暂时不可见，
-            // 或 DWM 判定不可见，但它仍然可以承载壁纸。
+            if (!Win32.IsWindowVisible(hWnd)) return false;
+            if (Win32.HasShellDefViewDescendant(hWnd)) return false;
+            return true;
+        }
+
+        /// <summary>判断是否为 WorkerW 且不含桌面图标（允许隐藏，仅作为最后兜底）。</summary>
+        private static bool IsOrphanWorkerWAllowHidden(IntPtr hWnd)
+        {
+            if (Win32.GetClassName(hWnd) != "WorkerW") return false;
             if (Win32.HasShellDefViewDescendant(hWnd)) return false;
             return true;
         }
 
         /// <summary>
-        /// 在 Progman 的直接子窗口中查找 WorkerW（Win11 常见结构）。
+        /// 在 Progman 的直接子窗口中查找可见的 WorkerW（Win11 常见结构）。
         /// 返回不含 SHELLDLL_DefView 的那个 WorkerW（即壁纸层）。
         /// </summary>
         private static IntPtr FindWorkerWUnderProgman(IntPtr progman)
@@ -176,7 +199,7 @@ namespace DynamicWallpaper.Desktop
             IntPtr child = IntPtr.Zero;
             while ((child = Win32.FindWindowEx(progman, child, "WorkerW", null)) != IntPtr.Zero)
             {
-                if (!Win32.HasShellDefViewDescendant(child))
+                if (IsOrphanWorkerW(child))
                     return child;
             }
             return IntPtr.Zero;
@@ -214,42 +237,64 @@ namespace DynamicWallpaper.Desktop
         }
 
         /// <summary>
-        /// 按屏幕矩形中心距离匹配所有 WorkerW。
+        /// 按屏幕矩形中心距离匹配所有可见 WorkerW。
         /// 不依赖桌面树结构，兼容 Progman/顶层/子窗口各种变体。
         /// </summary>
         private static IntPtr FindWorkerWByRect(Rectangle screenBounds)
         {
-            var candidates = new List<(IntPtr hwnd, double dist)>();
+            IntPtr bestVisible = IntPtr.Zero;
+            double bestVisibleDist = double.MaxValue;
+            IntPtr bestHidden = IntPtr.Zero;
+            double bestHiddenDist = double.MaxValue;
+
+            int cx = screenBounds.Left + screenBounds.Width / 2;
+            int cy = screenBounds.Top + screenBounds.Height / 2;
+
             Win32.EnumWindows((hwnd, _) =>
             {
-                if (!IsOrphanWorkerW(hwnd)) return true;
+                if (Win32.GetClassName(hwnd) != "WorkerW") return true;
+                if (Win32.HasShellDefViewDescendant(hwnd)) return true;
                 if (!Win32.GetWindowRect(hwnd, out Win32.RECT r)) return true;
 
                 int wcx = r.Left + r.Width / 2;
                 int wcy = r.Top + r.Height / 2;
-                int cx = screenBounds.Left + screenBounds.Width / 2;
-                int cy = screenBounds.Top + screenBounds.Height / 2;
+                bool inside = wcx >= screenBounds.Left && wcx <= screenBounds.Right &&
+                              wcy >= screenBounds.Top && wcy <= screenBounds.Bottom;
+                if (!inside) return true;
+
                 double dist = Math.Pow(wcx - cx, 2) + Math.Pow(wcy - cy, 2);
-                candidates.Add((hwnd, dist));
+                bool visible = Win32.IsWindowVisible(hwnd);
+                if (visible && dist < bestVisibleDist)
+                {
+                    bestVisible = hwnd;
+                    bestVisibleDist = dist;
+                }
+                else if (!visible && dist < bestHiddenDist)
+                {
+                    bestHidden = hwnd;
+                    bestHiddenDist = dist;
+                }
                 return true;
             }, IntPtr.Zero);
 
-            if (candidates.Count == 0) return IntPtr.Zero;
-            candidates.Sort((a, b) => a.dist.CompareTo(b.dist));
-            return candidates[0].hwnd;
+            return bestVisible != IntPtr.Zero ? bestVisible : bestHidden;
         }
 
         private static IntPtr FindOrphanWorkerW(Rectangle screenBounds)
         {
-            var orphans = new List<IntPtr>();
+            var visibleOrphans = new List<IntPtr>();
+            var hiddenOrphans = new List<IntPtr>();
 
             Win32.EnumWindows((hwnd, _) =>
             {
-                if (!IsOrphanWorkerW(hwnd)) return true;
-                orphans.Add(hwnd);
+                if (IsOrphanWorkerW(hwnd))
+                    visibleOrphans.Add(hwnd);
+                else if (IsOrphanWorkerWAllowHidden(hwnd))
+                    hiddenOrphans.Add(hwnd);
                 return true;
             }, IntPtr.Zero);
 
+            var orphans = visibleOrphans.Count > 0 ? visibleOrphans : hiddenOrphans;
             if (orphans.Count == 0) return IntPtr.Zero;
 
             // 优先：矩形完全相等
@@ -290,6 +335,21 @@ namespace DynamicWallpaper.Desktop
             Win32.EnumWindows((hwnd, _) =>
             {
                 if (IsOrphanWorkerW(hwnd))
+                {
+                    found = hwnd;
+                    return false;
+                }
+                return true;
+            }, IntPtr.Zero);
+            return found;
+        }
+
+        private static IntPtr FindAnyOrphanWorkerWAllowHidden()
+        {
+            IntPtr found = IntPtr.Zero;
+            Win32.EnumWindows((hwnd, _) =>
+            {
+                if (IsOrphanWorkerWAllowHidden(hwnd))
                 {
                     found = hwnd;
                     return false;
