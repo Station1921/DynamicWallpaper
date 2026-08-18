@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using DynamicWallpaper.Models;
@@ -61,10 +62,17 @@ namespace DynamicWallpaper.Core
             {
                 using var key = Registry.CurrentUser.OpenSubKey(RunKey, true);
                 if (key == null) return;
+                var exe = Process.GetCurrentProcess().MainModule?.FileName;
                 if (RunOnStartup)
                 {
-                    var exe = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
-                    if (!string.IsNullOrEmpty(exe)) key.SetValue(AppName, exe);
+                    // 开机自启项追加 --silent 参数：程序以静默方式启动（仅驻留托盘、不弹出主界面），
+                    // 但仍会构造 MainWindow 以恢复已保存的每屏壁纸。
+                    if (!string.IsNullOrEmpty(exe))
+                    {
+                        var expected = $"\"{exe}\" --silent";
+                        var current = key.GetValue(AppName) as string;
+                        if (current != expected) key.SetValue(AppName, expected);
+                    }
                 }
                 else
                 {
@@ -72,6 +80,15 @@ namespace DynamicWallpaper.Core
                 }
             }
             catch { }
+        }
+
+        /// <summary>
+        /// 确保注册表中的开机自启项已包含 --silent 参数（用于旧版本已开启自启、但当时未带该参数的用户迁移）。
+        /// 仅同步注册表，不写 config.json。
+        /// </summary>
+        public void EnsureStartupRegistered()
+        {
+            if (RunOnStartup) ApplyStartup();
         }
 
         private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
