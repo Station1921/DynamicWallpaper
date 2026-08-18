@@ -36,6 +36,7 @@ namespace DynamicWallpaper
         // 动态壁纸页签集合（现使用 netbian 动态分类 dongtai，提供 1920x1080 GIF 高清动画）
         public ObservableCollection<OnlineWallpaperItem> DynamicWallpapers { get; } = new();
         public bool ForceExit { get; set; }
+        private bool _exiting;
 
         private List<ScreenOption> _screenOptions = new();
         private CancellationTokenSource? _onlineCts;
@@ -90,6 +91,8 @@ namespace DynamicWallpaper
             catch { /* 图标加载失败不阻塞主流程 */ }
 
             _config = Config.Load();
+            // 迁移：若已开启开机自启，确保注册表自启项带有 --silent 参数（旧版本不带，导致开机仍弹主界面）
+            if (_config.RunOnStartup) _config.EnsureStartupRegistered();
             _manager = new WallpaperManager(_config);
             _downloadHistory = DownloadHistory.Load();
             _manager.Start();
@@ -740,11 +743,35 @@ namespace DynamicWallpaper
             status.Text = "已设为桌面";
         }
 
-        private async void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
+        /// <summary>
+        /// 退出程序：先停止所有壁纸并恢复系统静态壁纸，再关闭进程。
+        /// 用于“关闭主窗口（非最小化到托盘）”与“托盘退出”两条路径，
+        /// 确保无论怎么退出，桌面壁纸一定会被解除。
+        /// </summary>
+        public async Task ExitAndCleanupAsync()
         {
-            if (ForceExit)
+            if (_exiting) return;
+            _exiting = true;
+            ForceExit = true;
+            Hide();
+            try
             {
-                // 第二次进入：已在退出流程中，直接放行
+                // restoreWallpaper=true：退出时必须把系统壁纸刷回原始静态图，
+                // 否则 WorkerW 子窗口销毁后只会露出桌面背景（灰底/黑屏），不会自动恢复原壁纸。
+                await _manager.StopAsync(restoreWallpaper: true);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[MainWindow] 退出时停止壁纸出错: {ex}");
+            }
+            System.Windows.Application.Current.Shutdown();
+        }
+
+        private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
+        {
+            if (_exiting)
+            {
+                // 已在退出清理流程中，直接放行，避免重复进入
                 return;
             }
 
@@ -756,23 +783,10 @@ namespace DynamicWallpaper
                 return;
             }
 
-            // 用户未勾选最小化到托盘：先立即隐藏窗口，取消本次关闭事件，
-            // 在后台异步停止壁纸并恢复系统静态壁纸，随后触发真正关闭。
-            // 这样用户点击关闭后窗口立刻消失，不再等待 SendMessageTimeout/SPI 等耗时清理。
+            // 用户未勾选最小化到托盘：取消本次关闭事件，走统一清理流程
+            // （停止壁纸并恢复系统壁纸后关闭）。窗口立即隐藏，不再等待耗时清理。
             e.Cancel = true;
-            ForceExit = true;
-            Hide();
-            try
-            {
-                // restoreWallpaper=true：程序退出时必须把系统壁纸刷回原始静态图，
-                // 否则 WorkerW 子窗口销毁后只会露出桌面背景（灰底/黑屏），不会自动恢复原壁纸。
-                await _manager.StopAsync(restoreWallpaper: true);
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"[MainWindow] 停止壁纸时出错: {ex}");
-            }
-            _ = Dispatcher.BeginInvoke(new Action(Close), System.Windows.Threading.DispatcherPriority.Background);
+            _ = ExitAndCleanupAsync();
         }
 
         private void OnDragOver(object sender, DragEventArgs e)
