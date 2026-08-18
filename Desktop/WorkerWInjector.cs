@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Threading;
 using DynamicWallpaper.Desktop;
 
 namespace DynamicWallpaper.Desktop
@@ -17,19 +18,38 @@ namespace DynamicWallpaper.Desktop
         /// </summary>
         public static IntPtr AcquireWorkerW(Rectangle screenBounds)
         {
+            // 1) 已有且仍然有效的 WorkerW 直接复用
             var existing = FindOrphanWorkerW(screenBounds);
             if (existing != IntPtr.Zero) return existing;
 
-            // 触发 Windows 生成 WorkerW
+            // 2) 经典桌面树定位：找到包含桌面图标的窗口，再取它 Z 序下方的 WorkerW。
+            //    这是 Win10/Win11 最稳的方式，不依赖屏幕矩形匹配。
+            var byTree = FindWallpaperWorkerWByDesktopTree();
+            if (byTree != IntPtr.Zero) return byTree;
+
+            // 3) 仍没找到：向 Progman 发 0x052C 强制桌面重建 WorkerW，然后轮询等待
             var progman = Win32.FindWindow("Progman", null);
             if (progman != IntPtr.Zero)
             {
                 Win32.SendMessageTimeout(progman, Win32.WM_SPAWN_WORKER,
                     IntPtr.Zero, IntPtr.Zero,
                     Win32.SMTO_NORMAL, 1000, out _);
+
+                // 轮询最多 5 秒：很多 Win11 机器上 WorkerW 是异步生成的
+                for (int i = 0; i < 50; i++)
+                {
+                    Thread.Sleep(100);
+
+                    byTree = FindWallpaperWorkerWByDesktopTree();
+                    if (byTree != IntPtr.Zero) return byTree;
+
+                    existing = FindOrphanWorkerW(screenBounds);
+                    if (existing != IntPtr.Zero) return existing;
+                }
             }
 
-            return FindOrphanWorkerW(screenBounds);
+            // 4) 最后兜底：不看矩形、只看是不是孤儿 WorkerW
+            return FindAnyOrphanWorkerW();
         }
 
         /// <summary>
@@ -107,6 +127,37 @@ namespace DynamicWallpaper.Desktop
             return true;
         }
 
+        /// <summary>
+        /// 经典 Win10/Win11 桌面树定位法：
+        /// 枚举顶层窗口，找到包含 SHELLDLL_DefView（桌面图标容器）的窗口，
+        /// 再取 Z 序在它下方的 WorkerW，即为壁纸层。
+        /// </summary>
+        private static IntPtr FindWallpaperWorkerWByDesktopTree()
+        {
+            IntPtr shellContainer = IntPtr.Zero;
+            Win32.EnumWindows((hwnd, _) =>
+            {
+                if (Win32.HasShellDefViewDescendant(hwnd))
+                {
+                    shellContainer = hwnd;
+                    return false; // 已找到，停止枚举
+                }
+                return true;
+            }, IntPtr.Zero);
+
+            if (shellContainer == IntPtr.Zero) return IntPtr.Zero;
+
+            // 在 Z 序中位于 shellContainer 下方的 WorkerW 就是壁纸容器
+            IntPtr candidate = Win32.FindWindowEx(IntPtr.Zero, shellContainer, "WorkerW", null);
+            // 防止拿到仍然带图标的 WorkerW，继续往下找直到找到孤儿
+            int guard = 0;
+            while (candidate != IntPtr.Zero && !IsOrphanWorkerW(candidate) && guard++ < 16)
+            {
+                candidate = Win32.FindWindowEx(IntPtr.Zero, candidate, "WorkerW", null);
+            }
+            return IsOrphanWorkerW(candidate) ? candidate : IntPtr.Zero;
+        }
+
         private static IntPtr FindOrphanWorkerW(Rectangle screenBounds)
         {
             var orphans = new List<IntPtr>();
@@ -163,6 +214,21 @@ namespace DynamicWallpaper.Desktop
 
             // 再兜底：返回第一个孤儿（通常即主屏）
             return orphans[0];
+        }
+
+        private static IntPtr FindAnyOrphanWorkerW()
+        {
+            IntPtr found = IntPtr.Zero;
+            Win32.EnumWindows((hwnd, _) =>
+            {
+                if (IsOrphanWorkerW(hwnd))
+                {
+                    found = hwnd;
+                    return false;
+                }
+                return true;
+            }, IntPtr.Zero);
+            return found;
         }
 
         private static bool HasOurChild(IntPtr workerw, int currentPid)
