@@ -35,10 +35,7 @@ namespace DynamicWallpaper.Providers
                 Source = LoadImage(path, maxPixel)
             };
             _window.RootGrid.Children.Add(_image);
-            _window.Left = bounds.Left;
-            _window.Top = bounds.Top;
-            _window.Width = bounds.Width;
-            _window.Height = bounds.Height;
+            _window.SetDeviceBounds(bounds);
             _window.Show();
         }
 
