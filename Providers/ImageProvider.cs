@@ -36,12 +36,14 @@ namespace DynamicWallpaper.Providers
             };
             _window.RootGrid.Children.Add(_image);
             _window.SetDeviceBounds(bounds);
-            _window.Show();
+            // 不在这里 Show，避免 WorkerW 获取失败时窗口在顶层闪现；
+            // 窗口会在 AttachTo 成功挂接到 WorkerW 后再显示。
         }
 
         public void AttachTo(IntPtr workerw, Rectangle bounds)
         {
             WorkerWInjector.Attach(Handle, workerw, bounds);
+            _window?.Show(); // 成功挂接到桌面壁纸层后再显示
         }
 
         public void Play() { }
