@@ -34,6 +34,9 @@ namespace DynamicWallpaper.Providers
                 LoadedBehavior = MediaState.Play,
                 UnloadedBehavior = MediaState.Manual,
                 Stretch = Stretch.UniformToFill,
+                StretchDirection = StretchDirection.Both,
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+                VerticalAlignment = System.Windows.VerticalAlignment.Center,
                 IsMuted = true,
                 Volume = 0
             };
@@ -45,10 +48,7 @@ namespace DynamicWallpaper.Providers
                 if (_media != null) { _media.Position = TimeSpan.Zero; _media.Play(); }
             };
             _window.RootGrid.Children.Add(_media);
-            _window.Left = bounds.Left;
-            _window.Top = bounds.Top;
-            _window.Width = bounds.Width;
-            _window.Height = bounds.Height;
+            _window.SetDeviceBounds(bounds);
             _window.Show();
         }
 
