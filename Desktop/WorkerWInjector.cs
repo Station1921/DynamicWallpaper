@@ -2,118 +2,125 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Linq;
 using System.Threading;
 using DynamicWallpaper.Core;
-using DynamicWallpaper.Desktop;
 
 namespace DynamicWallpaper.Desktop
 {
     /// <summary>
-    /// 负责把渲染窗口挂接到 Windows 桌面的 WorkerW 容器层（图标之后、静态壁纸之前）。
+    /// 负责把渲染窗口挂接到 Windows 桌面壁纸层（在桌面图标之后、静态壁纸之前）。
     ///
-    /// 关键点：桌面窗口树里通常“同时”存在两个 WorkerW：
-    ///   1) 显示【静态系统壁纸】的底层 WorkerW（在桌面图标 SHELLDLL_DefView 之下）；
-    ///   2) 由 Progman 的 0x052C 消息触发生成的“空” WorkerW（在 SHELLDLL_DefView 之上），
-    ///      它就是用来承载动态壁纸的注入层。
-    /// 若把动态壁纸挂到第 1 个（底层）WorkerW，会被静态壁纸完全盖住 → 表现为“设置了没反应”。
-    /// 因此本类始终优先定位“位于桌面图标【上方】”的那个 WorkerW。
+    /// Windows 10/11 的桌面窗口树差异很大，本类采用“主策略 + 多个 fallback”的 robust 策略：
+    ///
+    /// 主策略（Win10 / 旧 Win11）：
+    ///   向 Progman 发送 0x052C，会在桌面图标 SHELLDLL_DefView 上方生成一个空的 WorkerW，
+    ///   把渲染窗口挂到该 WorkerW 内即可。
+    ///
+    /// Fallback A（部分 Win11）：
+    ///   0x052C 没有生成新的 WorkerW，或者生成的 WorkerW 不在预期层级。
+    ///   此时把渲染窗口直接挂到“包含 SHELLDLL_DefView 的那个 WorkerW”内部，并放在 DefView 下方，
+    ///   这样视频就在桌面图标后面，静态壁纸前面。
+    ///
+    /// Fallback B（极端情况）：
+    ///   把渲染窗口直接挂到 Progman，放在 DefView 容器下方。
     /// </summary>
     public static class WorkerWInjector
     {
         /// <summary>
-        /// 获取/创建与指定屏幕对应的“注入层” WorkerW 句柄（即桌面图标上方的那个）。
+        /// 获取/创建桌面壁纸承载窗口。返回的句柄可能是：
+        ///   - 图标上方的注入层 WorkerW（最常见）
+        ///   - 包含图标的 WorkerW 容器（fallback A）
+        ///   - Progman（fallback B）
+        /// 调用方应把此句柄作为 SetParent 的父窗口。
         /// </summary>
         public static IntPtr AcquireWorkerW(Rectangle screenBounds)
         {
-            Logger.Log($"[WorkerW] 开始获取 WorkerW（注入层），目标屏幕: {screenBounds}");
-
-            // 1) 优先复用已存在的注入层（桌面图标上方的 WorkerW），避免每次都重新触发 0x052C 造成 WorkerW 堆积
-            var existing = FindInjectionWorkerW();
-            if (existing != IntPtr.Zero)
-            {
-                Logger.Log($"[WorkerW] 复用已有注入层 WorkerW: 0x{existing.ToInt64():X}（位于图标上方={IsAboveDefView(existing)}）");
-                return existing;
-            }
+            Logger.Log($"[WorkerW] 开始获取桌面壁纸承载层，目标屏幕: {screenBounds}");
 
             var progman = Win32.FindWindow("Progman", null);
             Logger.Log($"[WorkerW] Progman=0x{progman.ToInt64():X}");
+            LogDesktopTree(progman);
 
-            // 2) 向 Progman 发 0x052C 强制在桌面图标上方生成/暴露注入层 WorkerW
+            // 1) 先触发一次 0x052C（Wallpaper Engine / Lively 的标准参数 0xD）
             if (progman != IntPtr.Zero)
             {
                 Win32.SendMessageTimeout(progman, Win32.WM_SPAWN_WORKER,
-                    IntPtr.Zero, IntPtr.Zero,
+                    new IntPtr(0xD), IntPtr.Zero,
                     Win32.SMTO_NORMAL, 1000, out _);
-                Logger.Log("[WorkerW] 已发送 0x052C 触发注入层 WorkerW 生成");
-            }
-            else
-            {
-                Logger.Log("[WorkerW] 警告：未找到 Progman");
+                Logger.Log("[WorkerW] 已发送 0x052C (wParam=0xD)");
             }
 
-            // 3) 轮询最多 8 秒（Win11 上 WorkerW 是异步生成的，100ms 不够）
+            // 2) 轮询最多 8 秒
             for (int i = 0; i < 80; i++)
             {
                 Thread.Sleep(100);
 
-                // 策略 A（主）：桌面图标上方的 WorkerW —— 即正确的注入层
-                var w = FindInjectionWorkerW();
+                // 策略 1：图标上方的标准注入层 WorkerW
+                var w = FindWorkerWAboveDefView();
                 if (w != IntPtr.Zero)
                 {
-                    Logger.Log($"[WorkerW] 通过图标上方定位找到注入层: 0x{w.ToInt64():X}（第{i}次轮询）");
+                    Logger.Log($"[WorkerW] 策略1-图标上方注入层: 0x{w.ToInt64():X}（第{i}次轮询）");
                     return w;
                 }
 
-                // 策略 B：Progman 的直接子窗口里的 WorkerW（Win11 常见结构，通常是刚生成的那个）
-                w = FindWorkerWUnderProgman(progman);
+                // 策略 2：Win11 上 DefView 嵌套在 WorkerW 容器内，0x052C 又没产生新 WorkerW 时，
+                // 把视频直接挂到该容器内部、DefView 下方。
+                w = FindDefViewContainerWorkerW();
                 if (w != IntPtr.Zero)
                 {
-                    Logger.Log($"[WorkerW] 通过 Progman 子窗口找到: 0x{w.ToInt64():X}（第{i}次轮询）");
+                    Logger.Log($"[WorkerW] 策略2-DefView容器WorkerW: 0x{w.ToInt64():X}（第{i}次轮询），将挂到其内部DefView下方");
                     return w;
                 }
 
-                // 策略 C：按屏幕矩形匹配所有 WorkerW（不依赖层级，兼容各种变体）
+                // 策略 3：任意匹配屏幕矩形的孤儿 WorkerW
                 w = FindWorkerWByRect(screenBounds);
                 if (w != IntPtr.Zero)
                 {
-                    Logger.Log($"[WorkerW] 通过矩形匹配找到: 0x{w.ToInt64():X}（第{i}次轮询）");
-                    return w;
-                }
-
-                // 策略 D（最后兜底）：任意孤儿 WorkerW（含隐藏），用于诊断
-                w = FindAnyOrphanWorkerWAllowHidden();
-                if (w != IntPtr.Zero)
-                {
-                    Logger.Log($"[WorkerW] 通过任意孤儿 WorkerW 找到(兜底): 0x{w.ToInt64():X}（第{i}次轮询），将强制显示");
+                    Logger.Log($"[WorkerW] 策略3-矩形匹配WorkerW: 0x{w.ToInt64():X}（第{i}次轮询）");
                     return w;
                 }
             }
 
-            Logger.Log("[WorkerW] 错误：所有策略均未找到 WorkerW");
-            LogWorkerWState();
+            // 策略 4：直接挂 Progman
+            if (progman != IntPtr.Zero)
+            {
+                Logger.Log($"[WorkerW] 策略4-兜底使用Progman: 0x{progman.ToInt64():X}");
+                return progman;
+            }
+
+            Logger.Log("[WorkerW] 错误：所有策略均未找到可用桌面承载层");
             return IntPtr.Zero;
         }
 
         /// <summary>
-        /// 将渲染子窗口挂接到 WorkerW，并铺满指定屏幕区域。
+        /// 将渲染子窗口挂接到父窗口，并铺满指定屏幕区域。
+        /// 父窗口可能是：图标上方 WorkerW / DefView 容器 WorkerW / Progman。
         /// </summary>
-        public static void Attach(IntPtr childHwnd, IntPtr workerwHwnd, Rectangle bounds)
+        public static void Attach(IntPtr childHwnd, IntPtr parentHwnd, Rectangle bounds)
         {
-            if (childHwnd == IntPtr.Zero || workerwHwnd == IntPtr.Zero) return;
-
-            // 先清理该 WorkerW 上本程序旧的渲染窗口，防止叠加成“两张壁纸”
-            DetachChildren(workerwHwnd);
-
-            // 确保 WorkerW 本身可见，否则子窗口无法显示出来
-            if (!Win32.IsWindowVisible(workerwHwnd))
+            if (childHwnd == IntPtr.Zero || parentHwnd == IntPtr.Zero)
             {
-                Logger.Log($"[WorkerW] Attach 前 WorkerW 不可见，强制 ShowWindow: 0x{workerwHwnd.ToInt64():X}");
-                Win32.ShowWindow(workerwHwnd, Win32.SW_SHOW);
+                Logger.Log($"[WorkerW] Attach 失败：child=0x{childHwnd.ToInt64():X}, parent=0x{parentHwnd.ToInt64():X}");
+                return;
             }
 
-            Win32.SetParent(childHwnd, workerwHwnd);
+            Logger.Log($"[WorkerW] 开始 Attach: child=0x{childHwnd.ToInt64():X} -> parent=0x{parentHwnd.ToInt64():X}, bounds={bounds}");
 
-            // 去掉标题栏/边框/任务栏条目，避免抢焦点与 Alt+Tab 露出
+            // 先清理父窗口中本程序旧的渲染窗口
+            DetachChildren(parentHwnd);
+
+            // 确保父窗口可见
+            if (!Win32.IsWindowVisible(parentHwnd))
+            {
+                Logger.Log($"[WorkerW] parent 不可见，强制 ShowWindow: 0x{parentHwnd.ToInt64():X}");
+                Win32.ShowWindow(parentHwnd, Win32.SW_SHOW);
+            }
+
+            Win32.SetParent(childHwnd, parentHwnd);
+            Logger.Log("[WorkerW] SetParent 完成");
+
+            // 去掉标题栏/边框/任务栏条目
             int style = Win32.GetWindowLong(childHwnd, Win32.GWL_STYLE);
             style = (style | Win32.WS_CHILD | Win32.WS_VISIBLE)
                     & ~Win32.WS_CAPTION & ~Win32.WS_THICKFRAME
@@ -127,20 +134,36 @@ namespace DynamicWallpaper.Desktop
                       & ~Win32.WS_EX_APPWINDOW;
             Win32.SetWindowLong(childHwnd, Win32.GWL_EXSTYLE, exStyle);
 
-            Win32.SetWindowPos(childHwnd, Win32.HWND_BOTTOM,
+            // 如果父窗口是 DefView 容器（含 SHELLDLL_DefView），需要把 child 放到 DefView 下方，
+            // 否则 child 会盖住桌面图标。InsertAfter 用 DefView 句柄即可实现放到它后面。
+            IntPtr insertAfter = Win32.HWND_BOTTOM;
+            var defView = FindShellDefViewUnderParent(parentHwnd);
+            if (defView != IntPtr.Zero)
+            {
+                insertAfter = defView;
+                Logger.Log($"[WorkerW] 父窗口包含 DefView，将 child 置于 DefView 下方: 0x{defView.ToInt64():X}");
+            }
+
+            Win32.SetWindowPos(childHwnd, insertAfter,
                 0, 0, bounds.Width, bounds.Height,
-                Win32.SWP_NOACTIVATE | Win32.SWP_NOZORDER | Win32.SWP_NOOWNERZORDER | Win32.SWP_SHOWWINDOW);
+                Win32.SWP_NOACTIVATE | Win32.SWP_NOOWNERZORDER | Win32.SWP_SHOWWINDOW);
+
+            // 强制刷新父窗口/桌面，避免 Win11 DWM 不立即合成
+            Win32.SetWindowPos(parentHwnd, IntPtr.Zero, 0, 0, 0, 0,
+                Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOZORDER | Win32.SWP_FRAMECHANGED | Win32.SWP_SHOWWINDOW);
+
+            Logger.Log("[WorkerW] Attach 完成");
         }
 
         public static bool IsValid(IntPtr hWnd) => hWnd != IntPtr.Zero && Win32.IsWindow(hWnd);
 
-        /// <summary>销毁由本程序注入到 WorkerW 里的子窗口，避免旧壁纸残留造成“两张一样”。</summary>
-        public static void DetachChildren(IntPtr workerw)
+        /// <summary>销毁由本程序注入到父窗口里的子窗口，避免旧壁纸残留。</summary>
+        public static void DetachChildren(IntPtr parent)
         {
-            if (workerw == IntPtr.Zero) return;
+            if (parent == IntPtr.Zero) return;
             var currentPid = Process.GetCurrentProcess().Id;
             var children = new List<IntPtr>();
-            Win32.EnumChildWindows(workerw, (child, _) =>
+            Win32.EnumChildWindows(parent, (child, _) =>
             {
                 Win32.GetWindowThreadProcessId(child, out uint pid);
                 if ((int)pid == currentPid)
@@ -163,69 +186,82 @@ namespace DynamicWallpaper.Desktop
         public static void DestroyWorkerW(IntPtr workerw)
         {
             if (workerw == IntPtr.Zero) return;
-            if (!IsOrphanWorkerW(workerw)) return; // 安全措施：只销毁确认不带图标的孤儿
+            if (!IsOrphanWorkerWAllowHidden(workerw)) return;
             try { Win32.DestroyWindow(workerw); }
             catch { /* ignore */ }
         }
 
+        #region 定位策略
+
         /// <summary>
-        /// 定位“注入层” WorkerW：从桌面图标窗口 SHELLDLL_DefView 沿 Z 序向上走，
-        /// 第一个不含桌面图标的 WorkerW 即为位于图标上方的注入层。
+        /// 策略1：找到桌面图标 SHELLDLL_DefView 所在容器，在其父窗口中按 Z 序找【上方】的不含图标 WorkerW。
         /// </summary>
-        private static IntPtr FindInjectionWorkerW()
+        private static IntPtr FindWorkerWAboveDefView()
+        {
+            var container = FindDefViewContainer();
+            if (container == IntPtr.Zero) return IntPtr.Zero;
+
+            var parent = Win32.GetAncestor(container, Win32.GA_PARENT);
+            if (parent == IntPtr.Zero) return IntPtr.Zero;
+
+            var siblings = EnumChildrenZOrder(parent);
+            int idx = siblings.IndexOf(container);
+            if (idx <= 0) return IntPtr.Zero;
+
+            // 从 Z 序顶部往容器走，第一个不含图标的 WorkerW 就是注入层
+            for (int i = 0; i < idx; i++)
+            {
+                var h = siblings[i];
+                if (Win32.GetClassName(h) == "WorkerW" && !Win32.HasShellDefViewDescendant(h))
+                    return h;
+            }
+            return IntPtr.Zero;
+        }
+
+        /// <summary>
+        /// 返回 SHELLDLL_DefView 所在的“容器”窗口（Win11 结构）：
+        ///   即包含 SHELLDLL_DefView 的那个 WorkerW（其父为 Progman）。
+        ///   Win10 返回 IntPtr.Zero，因为 Win10 的 DefView 直接挂在 Progman 下，不该作为父窗口。
+        /// </summary>
+        private static IntPtr FindDefViewContainerWorkerW()
         {
             var defView = FindShellDefView();
             if (defView == IntPtr.Zero) return IntPtr.Zero;
 
-            IntPtr prev = Win32.GetWindow(defView, Win32.GW_HWNDPREV);
-            int guard = 0;
-            while (prev != IntPtr.Zero && guard++ < 16)
-            {
-                string cls = Win32.GetClassName(prev);
-                // 走到 Progman（图标窗口的父级）之上就停止，避免越界
-                if (cls == "Progman") break;
+            var parent = Win32.GetAncestor(defView, Win32.GA_PARENT);
+            if (parent == IntPtr.Zero) return IntPtr.Zero;
 
-                if (cls == "WorkerW" && !Win32.HasShellDefViewDescendant(prev))
-                    return prev;
+            // Win11：SHELLDLL_DefView 嵌套在 WorkerW 内
+            if (Win32.GetClassName(parent) == "WorkerW")
+                return parent;
 
-                prev = Win32.GetWindow(prev, Win32.GW_HWNDPREV);
-            }
-            return IntPtr.Zero;
-        }
-
-        /// <summary>判断某 WorkerW 是否位于桌面图标（SHELLDLL_DefView）上方（即正确的注入层）。</summary>
-        private static bool IsAboveDefView(IntPtr workerw)
-        {
-            var defView = FindShellDefView();
-            if (defView == IntPtr.Zero || workerw == IntPtr.Zero) return false;
-            IntPtr prev = Win32.GetWindow(defView, Win32.GW_HWNDPREV);
-            int guard = 0;
-            while (prev != IntPtr.Zero && guard++ < 16)
-            {
-                if (prev == workerw) return true;
-                if (Win32.GetClassName(prev) == "Progman") break;
-                prev = Win32.GetWindow(prev, Win32.GW_HWNDPREV);
-            }
-            return false;
-        }
-
-        /// <summary>在 Progman 的直接子窗口中查找可见的 WorkerW（Win11 常见结构）。</summary>
-        private static IntPtr FindWorkerWUnderProgman(IntPtr progman)
-        {
-            if (progman == IntPtr.Zero) return IntPtr.Zero;
-            IntPtr child = IntPtr.Zero;
-            while ((child = Win32.FindWindowEx(progman, child, "WorkerW", null)) != IntPtr.Zero)
-            {
-                if (IsOrphanWorkerW(child))
-                    return child;
-            }
+            // Win10：DefView 直接挂在 Progman 下，不把它当容器返回
             return IntPtr.Zero;
         }
 
         /// <summary>
-        /// 按屏幕矩形中心距离匹配所有可见 WorkerW。
-        /// 不依赖桌面树结构，兼容 Progman/顶层/子窗口各种变体。
-        /// 仅作为兜底，优先使用 FindInjectionWorkerW。
+        /// 返回 SHELLDLL_DefView 所在的“容器”窗口：
+        ///   - Win10：容器就是 SHELLDLL_DefView 本身（其父为 Progman）；
+        ///   - Win11：容器是包含 SHELLDLL_DefView 的那个 WorkerW（其父为 Progman）。
+        /// </summary>
+        private static IntPtr FindDefViewContainer()
+        {
+            var defView = FindShellDefView();
+            if (defView == IntPtr.Zero) return IntPtr.Zero;
+
+            var parent = Win32.GetAncestor(defView, Win32.GA_PARENT);
+            if (parent == IntPtr.Zero) return IntPtr.Zero;
+
+            // Win11：SHELLDLL_DefView 嵌套在 WorkerW 内
+            if (Win32.GetClassName(parent) == "WorkerW")
+                return parent;
+
+            // Win10：SHELLDLL_DefView 的直接父窗口是 Progman，返回 DefView 本身
+            return defView;
+        }
+
+        /// <summary>
+        /// 策略3：按屏幕矩形中心距离匹配所有 WorkerW。
         /// </summary>
         private static IntPtr FindWorkerWByRect(Rectangle screenBounds)
         {
@@ -267,14 +303,23 @@ namespace DynamicWallpaper.Desktop
             return bestVisible != IntPtr.Zero ? bestVisible : bestHidden;
         }
 
-        private static IntPtr FindAnyOrphanWorkerWAllowHidden()
+        /// <summary>
+        /// 在父窗口下查找 SHELLDLL_DefView（用于 fallback 时决定 child 的 Z 序插入点）。
+        /// </summary>
+        private static IntPtr FindShellDefViewUnderParent(IntPtr parent)
         {
+            if (parent == IntPtr.Zero) return IntPtr.Zero;
+            // 先查直接子窗口
+            IntPtr def = Win32.FindWindowEx(parent, IntPtr.Zero, "SHELLDLL_DefView", null);
+            if (def != IntPtr.Zero) return def;
+
+            // 再深度遍历
             IntPtr found = IntPtr.Zero;
-            Win32.EnumWindows((hwnd, _) =>
+            Win32.EnumChildWindows(parent, (child, _) =>
             {
-                if (IsOrphanWorkerWAllowHidden(hwnd))
+                if (Win32.GetClassName(child) == "SHELLDLL_DefView")
                 {
-                    found = hwnd;
+                    found = child;
                     return false;
                 }
                 return true;
@@ -282,11 +327,12 @@ namespace DynamicWallpaper.Desktop
             return found;
         }
 
-        /// <summary>查找桌面图标窗口 SHELLDLL_DefView（全局枚举，兼容其嵌套层级差异）。</summary>
+        /// <summary>全局查找桌面图标窗口 SHELLDLL_DefView。</summary>
         private static IntPtr FindShellDefView()
         {
-            // 先查各顶层窗口的直接子窗口（常规结构下 SHELLDLL_DefView 是 Progman 的直接子窗口）
             IntPtr found = IntPtr.Zero;
+
+            // 先查各顶层窗口的直接子窗口（Win10 常规结构）
             Win32.EnumWindows((hwnd, _) =>
             {
                 IntPtr def = Win32.FindWindowEx(hwnd, IntPtr.Zero, "SHELLDLL_DefView", null);
@@ -295,7 +341,7 @@ namespace DynamicWallpaper.Desktop
             }, IntPtr.Zero);
             if (found != IntPtr.Zero) return found;
 
-            // 兜底：深度遍历各顶层窗口的子窗口
+            // 兜底：深度遍历各顶层窗口的子窗口（Win11 嵌套结构）
             Win32.EnumWindows((hwnd, _) =>
             {
                 bool inner = false;
@@ -309,16 +355,6 @@ namespace DynamicWallpaper.Desktop
             return found;
         }
 
-        /// <summary>判断是否为可见的、可用于壁纸的 WorkerW。</summary>
-        private static bool IsOrphanWorkerW(IntPtr hWnd)
-        {
-            if (Win32.GetClassName(hWnd) != "WorkerW") return false;
-            if (!Win32.IsWindowVisible(hWnd)) return false;
-            if (Win32.HasShellDefViewDescendant(hWnd)) return false;
-            return true;
-        }
-
-        /// <summary>判断是否为 WorkerW 且不含桌面图标（允许隐藏，仅作为最后兜底）。</summary>
         private static bool IsOrphanWorkerWAllowHidden(IntPtr hWnd)
         {
             if (Win32.GetClassName(hWnd) != "WorkerW") return false;
@@ -326,20 +362,66 @@ namespace DynamicWallpaper.Desktop
             return true;
         }
 
-        /// <summary>记录当前所有 WorkerW 的句柄、矩形、可见性、是否含图标，用于诊断。</summary>
-        private static void LogWorkerWState()
+        /// <summary>枚举某窗口的子窗口，按 Z 序从高到低排列。</summary>
+        private static List<IntPtr> EnumChildrenZOrder(IntPtr parent)
         {
-            Logger.Log("[WorkerW] 当前 WorkerW 状态快照:");
-            Win32.EnumWindows((hwnd, _) =>
+            var list = new List<IntPtr>();
+            IntPtr child = Win32.GetWindow(parent, Win32.GW_CHILD);
+            int guard = 0;
+            while (child != IntPtr.Zero && guard++ < 256)
             {
-                if (Win32.GetClassName(hwnd) != "WorkerW") return true;
-                Win32.GetWindowRect(hwnd, out Win32.RECT r);
-                bool visible = Win32.IsWindowVisible(hwnd);
-                bool hasShell = Win32.HasShellDefViewDescendant(hwnd);
-                bool above = IsAboveDefView(hwnd);
-                Logger.Log($"  WorkerW 0x{hwnd.ToInt64():X}: rect=({r.Left},{r.Top},{r.Right},{r.Bottom}), visible={visible}, hasShell={hasShell}, aboveIcons={above}");
-                return true;
-            }, IntPtr.Zero);
+                list.Add(child);
+                child = Win32.GetWindow(child, Win32.GW_HWNDNEXT);
+            }
+            return list;
         }
+
+        #endregion
+
+        #region 诊断日志
+
+        private static void LogDesktopTree(IntPtr progman)
+        {
+            try
+            {
+                Logger.Log("[WorkerW] === 桌面窗口树快照 ===");
+                if (progman == IntPtr.Zero)
+                {
+                    Logger.Log("[WorkerW] Progman 未找到");
+                    return;
+                }
+
+                var siblings = EnumChildrenZOrder(progman);
+                Logger.Log($"[WorkerW] Progman 子窗口数: {siblings.Count}");
+                for (int i = 0; i < siblings.Count; i++)
+                {
+                    var h = siblings[i];
+                    var cls = Win32.GetClassName(h);
+                    Win32.GetWindowRect(h, out Win32.RECT r);
+                    bool visible = Win32.IsWindowVisible(h);
+                    bool hasShell = Win32.HasShellDefViewDescendant(h);
+                    Logger.Log($"[WorkerW]   [{i}] 0x{h.ToInt64():X} class={cls} rect=({r.Left},{r.Top},{r.Width}x{r.Height}) visible={visible} hasShell={hasShell}");
+
+                    if (cls == "WorkerW" || cls == "SHELLDLL_DefView")
+                    {
+                        // 再展开一层，便于看 Win11 嵌套
+                        var children = EnumChildrenZOrder(h);
+                        foreach (var c in children.Take(8))
+                        {
+                            var ccls = Win32.GetClassName(c);
+                            Win32.GetWindowRect(c, out Win32.RECT cr);
+                            Logger.Log($"[WorkerW]     -> 0x{c.ToInt64():X} class={ccls} rect=({cr.Left},{cr.Top},{cr.Width}x{cr.Height})");
+                        }
+                    }
+                }
+                Logger.Log("[WorkerW] === 快照结束 ===");
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[WorkerW] 记录桌面树时出错: {ex.Message}");
+            }
+        }
+
+        #endregion
     }
 }
