@@ -59,6 +59,21 @@ namespace DynamicWallpaper
             menu.Items.Add("退出", null, (_, _) => ExitApp());
             _tray.ContextMenuStrip = menu;
             _tray.DoubleClick += (_, _) => ShowMain();
+
+            // 是否静默启动：开机自启时注册表项带 --silent 参数，仅驻留托盘、不弹出主界面。
+            // （MainWindow 仍会被构造，其构造函数会恢复已保存的每屏壁纸。）
+            bool silent = false;
+            foreach (var a in e.Args)
+            {
+                if (a.Equals("--silent", StringComparison.OrdinalIgnoreCase)) { silent = true; break; }
+            }
+
+            var mw = new MainWindow();
+            Current.MainWindow = mw;
+            if (!silent)
+            {
+                mw.Show();
+            }
         }
 
         private void ShowMain()
@@ -72,8 +87,12 @@ namespace DynamicWallpaper
 
         private void ExitApp()
         {
-            if (Current.MainWindow is MainWindow mw) mw.ForceExit = true;
-            Current.Shutdown();
+            // 托盘“退出”：走统一的清理流程——先停止所有壁纸并恢复系统静态壁纸，再关闭进程。
+            // 这样即使程序是缩在托盘时强制退出，桌面壁纸也会被解除。
+            if (Current.MainWindow is MainWindow mw)
+                _ = mw.ExitAndCleanupAsync();
+            else
+                Current.Shutdown();
         }
 
         protected override void OnExit(ExitEventArgs e)
