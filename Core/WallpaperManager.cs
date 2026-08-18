@@ -243,11 +243,13 @@ namespace DynamicWallpaper.Core
             // 2. 在后台线程执行 Win32 清理与系统壁纸恢复（避免 SendMessageTimeout / SPI 阻塞 UI）
             await Task.Run(() =>
             {
-                // 销毁本屏占用的 WorkerW，避免旧窗口残留
+                // 仅把本程序注入的子窗口从 WorkerW 上摘离/销毁。
+                // 注意：【不要销毁系统 WorkerW 本身】——那样会迫使 Windows 重建桌面，
+                // 出现“黑屏闪一下再恢复”的现象。我们只是把自己的渲染窗口撤走，
+                // 原本压在注入层之下的系统静态壁纸会自然透出来，无需任何刷新。
                 if (st.WorkerW != IntPtr.Zero)
                 {
                     WorkerWInjector.DetachChildren(st.WorkerW);
-                    WorkerWInjector.DestroyWorkerW(st.WorkerW);
                     st.WorkerW = IntPtr.Zero;
                 }
 
@@ -267,10 +269,17 @@ namespace DynamicWallpaper.Core
                 if (string.IsNullOrEmpty(_originalWallpaper) || !File.Exists(_originalWallpaper))
                     ReadOriginalWallpaper();
 
+                // 读取当前系统实际壁纸；若与原始壁纸一致，说明本程序从未改动过系统壁纸，
+                // 直接跳过 —— 避免无谓的 SPI 刷新（先设空再设回原图正是“黑屏闪一下”的元凶）。
+                string current = Registry.GetValue(@"HKEY_CURRENT_USER\Control Panel\Desktop", "Wallpaper", "") as string ?? "";
+                if (string.Equals(current, _originalWallpaper, StringComparison.OrdinalIgnoreCase))
+                {
+                    Logger.Log("[WallpaperManager] 系统壁纸未变更，跳过恢复（避免黑屏闪烁）");
+                    return;
+                }
+
                 if (!string.IsNullOrEmpty(_originalWallpaper) && File.Exists(_originalWallpaper))
                 {
-                    // 先清为纯色再恢复，强制 Windows 重新绘制桌面
-                    Win32.SystemParametersInfo(Win32.SPI_SETDESKWALLPAPER, 0, "", Win32.SPIF_UPDATEINIFILE | Win32.SPIF_SENDCHANGE);
                     Win32.SystemParametersInfo(Win32.SPI_SETDESKWALLPAPER, 0, _originalWallpaper, Win32.SPIF_UPDATEINIFILE | Win32.SPIF_SENDCHANGE);
                     Logger.Log($"[WallpaperManager] 已恢复系统壁纸: {_originalWallpaper}");
                 }
