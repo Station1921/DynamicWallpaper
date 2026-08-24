@@ -32,7 +32,13 @@ namespace DynamicWallpaper.Core
         {
             try
             {
-                return SystemInformation.PowerStatus.PowerLineStatus == PowerLineStatus.Offline;
+                // 无电池的台式机（含部分 UPS 环境）PowerLineStatus 可能返回 Offline，
+                // 若直接据此判定"电池供电"会导致壁纸被永久自动暂停（且无从恢复感知）。
+                // 必须先确认系统真的存在电池。
+                var ps = SystemInformation.PowerStatus;
+                if (ps.BatteryChargeStatus == BatteryChargeStatus.NoSystemBattery)
+                    return false;
+                return ps.PowerLineStatus == PowerLineStatus.Offline;
             }
             catch { return false; }
         }
