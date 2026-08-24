@@ -14,26 +14,42 @@
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <PublishSingleFile>false</PublishSingleFile>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- 框架依赖单文件发布默认不打包原生库，WebView2Loader.dll 会被落到 runtimes\ 子目录，
+         单文件 exe 运行时 DllNotFoundException。开启后原生库打入 exe 并运行时自解压。 -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <ApplicationIcon>Assets\appicon.ico</ApplicationIcon>
 
     <!--
-      构建中间产物(obj/bin)默认放在工程目录下，本机有文件监视器/杀软会锁定
-      MarkupCompilePass1 生成的 .cache 文件，导致“Access to the path '...MarkupCompile.cache' is denied”而编译失败。
-      把 obj/bin 重定向到 %LOCALAPPDATA% 之外的临时目录，避开被监视的工程目录即可正常编译。
+      obj/bin 路径重定向见 Directory.Build.props（必须在 Microsoft.Common.props 导入前设置，
+      否则 MSBuildProjectExtensionsPath 会回退到被锁的项目 obj\，导致 MarkupCompile Access Denied）。
     -->
-    <BaseIntermediateOutputPath>$(LocalAppData)\DynamicWallpaperBuild\obj\</BaseIntermediateOutputPath>
-    <BaseOutputPath>$(LocalAppData)\DynamicWallpaperBuild\bin\</BaseOutputPath>
 
     <!-- 禁用 Roslyn 共享编译服务器，避免其常驻进程锁定 obj 下的 .cache 导致重复构建时报 Access Denied -->
     <UseSharedCompilation>false</UseSharedCompilation>
+    <!-- SDK 8.0.4xx 下 wpftmp 临时项目（MarkupCompilePass1）会把主项目 obj 下生成的
+         AssemblyAttributes.cs/AssemblyInfo.cs 当作编译源一并包含，触发 CS0579 特性重复。
+         关闭自动生成 AssemblyInfo 与 TargetFrameworkAttribute（版本等元数据仍由下方
+         AssemblyVersion 等属性声明），规避该问题。 -->
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
   </PropertyGroup>
 
-  <!-- 网页壁纸为独立可选模块，排除出主工程编译（避免主工程依赖 WebView2） -->
+  <!-- 网页壁纸为独立可选模块，排除出主工程编译。注：主工程现已直接依赖 WebView2
+       （视频壁纸 Provider 使用 WebView2 + HTML5 video），该模块仍独立编译排除，
+       避免其与主工程的 WebView2 引用重复/冲突。 -->
   <ItemGroup>
     <Compile Remove="DynamicWallpaper.Web\**" />
     <Page Remove="DynamicWallpaper.Web\**" />
     <ApplicationDefinition Remove="DynamicWallpaper.Web\**" />
+  </ItemGroup>
+
+  <!-- 视频壁纸渲染内核：WebView2（Win11 25H2 raised desktop 下 WPF MediaElement 无法被 DWM 合成，
+       实验验证 WebView2 内容可被 DWM 真实合成到桌面）。版本 1.0.2592.51 为实验验证版本，禁止降级。 -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2592.51" />
   </ItemGroup>
 
   <!-- netbian 等中文壁纸站使用 GBK 编码，.NET 8 默认不支持 GBK，需要 CodePages 提供程序 -->
@@ -45,6 +61,14 @@
        运行时由 Icon.ExtractAssociatedIcon 取出，用于窗口标题栏与托盘；不再依赖 WPF pack 资源 -->
   <ItemGroup>
     <None Include="Assets\appicon.png" />
+  </ItemGroup>
+
+  <!-- ffmpeg 内嵌资源：单文件发布后 exe 自带 ffmpeg，运行时按需解压到程序根目录，
+       避免用户移动 exe 后因缺少 ffmpeg.exe 而无法转码 -->
+  <ItemGroup>
+    <EmbeddedResource Include="ffmpeg.exe">
+      <LogicalName>ffmpeg.exe</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>
