@@ -31,12 +31,21 @@ namespace DynamicWallpaper.Providers
         public WallpaperType Type => WallpaperType.Gif;
         public IntPtr Handle => _window == null ? IntPtr.Zero : new WindowInteropHelper(_window).EnsureHandle();
 
+        /// <summary>壁纸适应方式：fill=铺满裁剪 / fit=完整显示 / center=原始居中。由 WallpaperManager 在切换时注入。</summary>
+        public static string FitMode { get; set; } = "fill";
+
         public void Show(string path, DrawingRectangle bounds)
         {
             _window = new RenderWindow();
+            var stretch = FitMode switch
+            {
+                "fit" => Stretch.Uniform,
+                "center" => Stretch.None,
+                _ => Stretch.UniformToFill
+            };
             _image = new Image
             {
-                Stretch = Stretch.UniformToFill,
+                Stretch = stretch,
                 HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
                 VerticalAlignment = System.Windows.VerticalAlignment.Center
             };
@@ -95,6 +104,18 @@ namespace DynamicWallpaper.Providers
         {
             WorkerWInjector.Attach(Handle, workerw, bounds);
             _window?.Show(); // 成功挂接到桌面壁纸层后再显示
+        }
+
+        /// <summary>运行时切换适应方式：立即更新已渲染 GIF 的 Stretch（须在 UI 线程调用）。</summary>
+        public void ApplyFitMode()
+        {
+            if (_image == null) return;
+            _image.Stretch = FitMode switch
+            {
+                "fit" => Stretch.Uniform,
+                "center" => Stretch.None,
+                _ => Stretch.UniformToFill
+            };
         }
 
         public void Play()
