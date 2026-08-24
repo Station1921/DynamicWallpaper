@@ -17,6 +17,26 @@ namespace DynamicWallpaper
 
         protected override void OnStartup(StartupEventArgs e)
         {
+            // 单文件（PublishSingleFile）自包含部署下，WPF 的 InitializeComponent/LoadComponent
+            // 会按程序集名解析 BAML 资源所在程序集；单文件宿主把程序集内嵌，按名字直接加载会抛
+            // FileNotFoundException，导致 MainWindow 构造失败、主窗口只剩背景色（黑屏/白屏）。
+            // 注册解析回退：把对当前程序集名的请求解析为执行程序集本身，使 XAML 资源可正常加载。
+            // （.NET 8 单文件下该失败走 AssemblyLoadContext 解析链，AppDomain.AssemblyResolve 不一定触发，
+            //  因此两者都注册作双保险；多文件发布时此回退为 no-op，无害。）
+            string thisAssemblyName = typeof(App).Assembly.GetName().Name!;
+            AppDomain.CurrentDomain.AssemblyResolve += (_, args) =>
+            {
+                try
+                {
+                    if (new System.Reflection.AssemblyName(args.Name!).Name == thisAssemblyName)
+                        return typeof(App).Assembly;
+                }
+                catch { }
+                return null!;
+            };
+            System.Runtime.Loader.AssemblyLoadContext.Default.Resolving += (_, name) =>
+                name.Name == thisAssemblyName ? typeof(App).Assembly : null!;
+
             // 全局未处理异常捕获：写入 app.log，避免进程静默崩溃
             // （之前表现为托盘图标悬停即消失、双击无反应）
             DispatcherUnhandledException += (_, ex) =>
@@ -72,7 +92,12 @@ namespace DynamicWallpaper
             Current.MainWindow = mw;
             if (!silent)
             {
+                Logger.Log("[App] 显示主窗口（非静默）");
                 mw.Show();
+            }
+            else
+            {
+                Logger.Log("[App] 静默启动（--silent），仅驻留托盘");
             }
         }
 
