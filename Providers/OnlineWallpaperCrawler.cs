@@ -7,6 +7,7 @@ using System.Net.Http;
 using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -20,6 +21,9 @@ namespace DynamicWallpaper.Providers
     {
         public string Name { get; set; } = "";
         public string Slug { get; set; } = "";
+
+        /// <summary>ComboBox 选中项（SelectionBoxItem）直接显示 Name，避免自定义模板显示类型全名。</summary>
+        public override string ToString() => Name;
     }
 
     /// <summary>
@@ -59,15 +63,14 @@ namespace DynamicWallpaper.Providers
             Client.Timeout = TimeSpan.FromSeconds(45);
         }
 
-        /// <summary>在线壁纸自动下载保存目录：程序根目录旁的 Wallpapers 文件夹。</summary>
+        /// <summary>在线壁纸自动下载保存目录：程序 exe 根目录旁的 Wallpapers 文件夹。</summary>
         public static string OnlineSaveDirectory
         {
             get
             {
-                var baseDir = AppContext.BaseDirectory;
-                // 如果运行在 publish 输出根目录，则直接在其旁创建 Wallpapers；
-                // 开发时则落在 bin/.../net8.0-windows/Wallpapers，同样便于查看。
-                return Path.Combine(baseDir, "Wallpapers");
+                // 统一走 AppPaths.RootDirectory：单文件发布时 AppContext.BaseDirectory
+                // 指向 C 盘临时解压目录，而 AppPaths.RootDirectory 始终为 exe 真实所在目录。
+                return Path.Combine(AppPaths.RootDirectory, "Wallpapers");
             }
         }
 
@@ -115,7 +118,63 @@ namespace DynamicWallpaper.Providers
             new() { Name = "体育壁纸", Slug = "deskTY" }
         };
 
-        public static Task<List<OnlineWallpaperItem>> FetchAsync(string source, int page = 1, string? categorySlug = null, CancellationToken ct = default)
+        /// <summary>Wallhaven（wallhaven.cc）的分类，与站点顶部筛选栏一致。
+        /// Slug 存 API 参数串 "categories|purity"：categories 三位标记（第1位 general、第2位 anime、第3位 people，1 启用 0 禁用）；
+        /// purity 三位标记（第1位 sfw、第2位 sketchy、第3位 nsfw，1 启用 0 禁用）。</summary>
+        public static IReadOnlyList<CategoryInfo> WallhavenCategories { get; } = new List<CategoryInfo>
+        {
+            new() { Name = "全部", Slug = "111|100" },
+            new() { Name = "General", Slug = "100|100" },
+            new() { Name = "Anime", Slug = "010|100" },
+            new() { Name = "People", Slug = "001|100" },
+            new() { Name = "SFW", Slug = "111|100" },
+            new() { Name = "Sketchy", Slug = "111|010" }
+        };
+
+        /// <summary>最近一次 wallhaven API 调用返回的末页页号，用于 LoadGBizhiAsync 判断是否还有更多内容。
+        /// 初始化时设为 int.MaxValue 表示"未知"，调用后设为实际值。API 失败时保持原值不变。</summary>
+        public static int WallhavenLastPage { get; set; } = int.MaxValue;
+
+        /// <summary>Wallhaven（wallhaven.cc）的分辨率筛选选项，与站点 Resolution 下拉一致。
+        /// Value 为 wallhaven API 的 resolutions 参数值（如 1920x1080），空串表示不限。</summary>
+        public static IReadOnlyList<CategoryInfo> WallhavenResolutions { get; } = new List<CategoryInfo>
+        {
+            new() { Name = "不限", Slug = "" },
+            // Ultrawide（21:9）
+            new() { Name = "2560x1080", Slug = "2560x1080" },
+            new() { Name = "3440x1440", Slug = "3440x1440" },
+            new() { Name = "3840x1600", Slug = "3840x1600" },
+            new() { Name = "5120x2160", Slug = "5120x2160" },
+            // 16:9
+            new() { Name = "1280x720", Slug = "1280x720" },
+            new() { Name = "1366x768", Slug = "1366x768" },
+            new() { Name = "1600x900", Slug = "1600x900" },
+            new() { Name = "1920x1080", Slug = "1920x1080" },
+            new() { Name = "2560x1440", Slug = "2560x1440" },
+            new() { Name = "3840x2160", Slug = "3840x2160" },
+            new() { Name = "5120x2880", Slug = "5120x2880" },
+            new() { Name = "7680x4320", Slug = "7680x4320" },
+            // 16:10
+            new() { Name = "1280x800", Slug = "1280x800" },
+            new() { Name = "1440x900", Slug = "1440x900" },
+            new() { Name = "1600x1000", Slug = "1600x1000" },
+            new() { Name = "1920x1200", Slug = "1920x1200" },
+            new() { Name = "2560x1600", Slug = "2560x1600" },
+            new() { Name = "3840x2400", Slug = "3840x2400" },
+            // 4:3
+            new() { Name = "1280x960", Slug = "1280x960" },
+            new() { Name = "1600x1200", Slug = "1600x1200" },
+            new() { Name = "1920x1440", Slug = "1920x1440" },
+            new() { Name = "2560x1920", Slug = "2560x1920" },
+            new() { Name = "3840x2880", Slug = "3840x2880" },
+            // 5:4
+            new() { Name = "1280x1024", Slug = "1280x1024" },
+            new() { Name = "1600x1280", Slug = "1600x1280" },
+            new() { Name = "1920x1536", Slug = "1920x1536" },
+            new() { Name = "2560x2048", Slug = "2560x2048" }
+        };
+
+        public static Task<List<OnlineWallpaperItem>> FetchAsync(string source, int page = 1, string? categorySlug = null, CancellationToken ct = default, string? wallhavenResolution = null)
         {
             return source.ToLowerInvariant() switch
             {
@@ -124,6 +183,7 @@ namespace DynamicWallpaper.Providers
                 "3gbizhi" => FetchGBizhiAsync(page, categorySlug, ct),
                 "3gbizhi-dt" => Fetch3gDTAsync(page, ct),
                 "zhutix" => FetchZhutixAsync(page, ct),
+                "wallhaven" => FetchWallhavenAsync(page, categorySlug, wallhavenResolution, ct),
                 // "livewallpapers4free" => FetchLw4fAsync(page, ct), // 海外站点网络可达性差，当前默认源禁用
                 _ => throw new ArgumentException($"未知在线壁纸来源：{source}")
             };
@@ -366,6 +426,124 @@ namespace DynamicWallpaper.Providers
         }
 
         /// <summary>
+        /// 抓取 wallhaven.cc 壁纸列表（对应站内 toplist 页面）。
+        /// 优先调用官方 API（无需解析 HTML），失败时回退解析 toplist 页面。
+        /// 排序固定 sorting=date_added&amp;order=desc，与 wallhaven 网站手动筛选默认排序一致。
+        /// 原 toplist 仅收录排行榜壁纸，内容范围小于全站最新，导致筛选结果比网站少。
+        /// </summary>
+        private static async Task<List<OnlineWallpaperItem>> FetchWallhavenAsync(int page, string? categorySlug, string? resolutionFilter, CancellationToken ct)
+        {
+            var (categories, purity) = ParseWallhavenSlug(categorySlug);
+            // 分辨率筛选：空串/空白表示不限；API 的 resolutions 参数格式如 1920x1080（x 小写）
+            var resQuery = string.IsNullOrWhiteSpace(resolutionFilter) ? "" : $"&resolutions={Uri.EscapeDataString(resolutionFilter.Trim())}";
+            var apiUrl = $"https://wallhaven.cc/api/v1/search?categories={categories}&purity={purity}&sorting=date_added&order=desc&page={page}{resQuery}";
+            Logger.Log($"[爬虫] 开始抓取 wallhaven API: {apiUrl}");
+
+            var list = new List<OnlineWallpaperItem>();
+            try
+            {
+                var json = await GetStringWithEncodingAsync(apiUrl, ct);
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("meta", out var meta) && meta.TryGetProperty("last_page", out var lp))
+                    WallhavenLastPage = lp.GetInt32();
+                if (doc.RootElement.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var el in data.EnumerateArray())
+                    {
+                        var id = el.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
+                        var path = el.TryGetProperty("path", out var pathEl) ? pathEl.GetString() ?? "" : "";
+                        var detail = el.TryGetProperty("url", out var urlEl) ? urlEl.GetString() ?? "" : "";
+                        var resolution = el.TryGetProperty("resolution", out var resEl) ? resEl.GetString() ?? "" : "";
+                        var category = el.TryGetProperty("category", out var catEl) ? catEl.GetString() ?? "" : "";
+                        var purityTag = el.TryGetProperty("purity", out var purEl) ? purEl.GetString() ?? "" : "";
+
+                        if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(path)) continue;
+
+                        // 列表缩略图优先 thumbs.large，其次 thumbs.original / thumbnail 兜底
+                        var thumb = "";
+                        if (el.TryGetProperty("thumbs", out var thumbs) && thumbs.ValueKind == JsonValueKind.Object)
+                        {
+                            if (thumbs.TryGetProperty("large", out var largeEl)) thumb = largeEl.GetString() ?? "";
+                            if (string.IsNullOrEmpty(thumb) && thumbs.TryGetProperty("original", out var origEl)) thumb = origEl.GetString() ?? "";
+                        }
+                        if (string.IsNullOrEmpty(thumb) && el.TryGetProperty("thumbnail", out var thEl))
+                            thumb = thEl.GetString() ?? "";
+
+                        var localThumb = await DownloadThumbAsync(thumb, ct);
+                        var title = string.IsNullOrEmpty(resolution) ? $"wallhaven-{id}" : $"wallhaven-{id} {resolution}";
+                        if (!string.IsNullOrEmpty(category) && !string.IsNullOrEmpty(purityTag))
+                            title = $"{title} [{category}/{purityTag}]";
+
+                        list.Add(new OnlineWallpaperItem
+                        {
+                            Title = title,
+                            ThumbnailUrl = localThumb ?? thumb,
+                            DetailUrl = string.IsNullOrEmpty(detail) ? $"https://wallhaven.cc/w/{id}" : detail,
+                            Source = "wallhaven",
+                            // API 返回的 path 即原图直链（w.wallhaven.cc/full/...），下载时无需再进详情页
+                            DownloadUrl = path,
+                            Resolution = resolution
+                        });
+                    }
+                }
+                Logger.Log($"[爬虫] wallhaven API 解析到 {list.Count} 条");
+                return list;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[爬虫] wallhaven API 失败，回退解析页面: {ex.Message}");
+            }
+
+            // 回退：解析 https://wallhaven.cc/toplist?page={page} 列表页
+            var htmlUrl = $"https://wallhaven.cc/toplist?page={page}";
+            Logger.Log($"[爬虫] 回退抓取 wallhaven 列表页: {htmlUrl}");
+            var html = await GetStringWithEncodingAsync(htmlUrl, ct);
+
+            // 每个条目是一个 <figure class="thumb ..."> 块，含 preview 详情链接与缩略图 img
+            var figureRx = new Regex(@"<figure[^>]*class=""thumb[^""]*""[^>]*>([\s\S]*?)</figure>", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+            var detailRx = new Regex(@"<a[^>]*class=""preview""[^>]*href=""(https://wallhaven\.cc/w/[^""]+)""", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+            var imgRx = new Regex(@"<img[^>]*src=""([^""]+)""", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (Match fig in figureRx.Matches(html))
+            {
+                var block = fig.Groups[1].Value;
+                var detailM = detailRx.Match(block);
+                if (!detailM.Success) continue;
+                var detail = detailM.Groups[1].Value.Trim();
+                if (!seen.Add(detail)) continue;
+
+                var id = detail.TrimEnd('/').Split('/').LastOrDefault() ?? "";
+                var imgM = imgRx.Match(block);
+                var thumb = imgM.Success ? imgM.Groups[1].Value.Trim() : "";
+                var localThumb = await DownloadThumbAsync(thumb, ct);
+
+                list.Add(new OnlineWallpaperItem
+                {
+                    Title = string.IsNullOrEmpty(id) ? "wallhaven" : $"wallhaven-{id}",
+                    ThumbnailUrl = localThumb ?? thumb,
+                    DetailUrl = detail,
+                    Source = "wallhaven",
+                    // 列表页拿不到原图直链，下载时回退详情页解析
+                    DownloadUrl = null
+                });
+            }
+
+            Logger.Log($"[爬虫] wallhaven 列表页解析到 {list.Count} 条");
+            return list;
+        }
+
+        /// <summary>解析 wallhaven 分类 Slug（"categories|purity"），缺省返回默认全部 SFW（111|100）。</summary>
+        private static (string Categories, string Purity) ParseWallhavenSlug(string? categorySlug)
+        {
+            var slug = string.IsNullOrWhiteSpace(categorySlug) ? "" : categorySlug.Trim();
+            var parts = slug.Split('|', StringSplitOptions.RemoveEmptyEntries);
+            var categories = parts.Length > 0 && parts[0].Length == 3 ? parts[0] : "111";
+            var purity = parts.Length > 1 && parts[1].Length == 3 ? parts[1] : "100";
+            return (categories, purity);
+        }
+
+        /// <summary>
         /// 抓取 livewallpapers4free.com 动态壁纸列表。
         /// 列表页提供缩略图与详情页链接；先立即返回缩略图列表让 UI 可显示，
         /// 再后台并发获取详情页的 480p 预览视频和 /download/{id}/ 高清下载直链。
@@ -495,6 +673,8 @@ namespace DynamicWallpaper.Providers
                 path = await Download3gDTAsync(item, saveDir, ct);
             else if (item.Source == "zhutix")
                 path = await DownloadZhutixAsync(item, saveDir, ct);
+            else if (item.Source == "wallhaven")
+                path = await DownloadWallhavenAsync(item, saveDir, ct);
 
             if (!string.IsNullOrEmpty(path))
             {
@@ -654,6 +834,56 @@ namespace DynamicWallpaper.Providers
             return await SaveFileAsync(downloadUrl, saveDir, item.Title, ct, ".mp4");
         }
 
+        /// <summary>
+        /// wallhaven 壁纸下载：优先使用 API 返回的 path 原图直链（w.wallhaven.cc/full/...），
+        /// 无需再进详情页；列表页回退场景（DownloadUrl 为空）才解析详情页主图。
+        /// 注意 wallhaven 单张下载有速率限制，失败时记录日志并返回 null 即可。
+        /// </summary>
+        private static async Task<string?> DownloadWallhavenAsync(OnlineWallpaperItem item, string saveDir, CancellationToken ct)
+        {
+            var url = item.DownloadUrl;
+
+            // 1) 优先直链下载
+            if (!string.IsNullOrWhiteSpace(url))
+            {
+                Logger.Log($"[爬虫] wallhaven 下载原图: {url}");
+                var path = await SaveFileAsync(url, saveDir, item.Title, ct);
+                if (!string.IsNullOrEmpty(path)) return path;
+                // 直链失败（常见于 CDN 限流），继续走详情页回退
+                Logger.Log("[爬虫] wallhaven 直链下载失败，尝试详情页回退");
+            }
+
+            // 2) 直链缺失或失败：进详情页解析 id="wallpaper" 原图再试一次。
+            //    详情页与直链走同一 CDN，但 URL 路径不同，可绕过部分按路径限流的限制。
+            try
+            {
+                Logger.Log($"[爬虫] wallhaven 回退解析详情页: {item.DetailUrl}");
+                var detail = await GetStringWithEncodingAsync(item.DetailUrl, ct);
+                var m = Regex.Match(detail, @"<img[^>]*\bid=""wallpaper""[^>]*src=""([^""]+)""", RegexOptions.IgnoreCase);
+                if (!m.Success)
+                    m = Regex.Match(detail, @"id=""wallpaper""[^>]*src=""([^""]+)""", RegexOptions.IgnoreCase);
+                if (!m.Success)
+                {
+                    Logger.Log("[爬虫] wallhaven 详情页未找到原图");
+                    return null;
+                }
+                var detailUrl = MakeAbsolute(m.Groups[1].Value.Trim(), "https://wallhaven.cc/");
+                // 与已失败的直链完全相同则不再重复尝试
+                if (!string.IsNullOrWhiteSpace(url) && string.Equals(detailUrl, url, StringComparison.OrdinalIgnoreCase))
+                {
+                    Logger.Log("[爬虫] wallhaven 详情页原图与直链一致，放弃重试");
+                    return null;
+                }
+                Logger.Log($"[爬虫] wallhaven 回退下载详情页原图: {detailUrl}");
+                return await SaveFileAsync(detailUrl, saveDir, item.Title, ct);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[爬虫] wallhaven 详情页回退失败: {ex.Message}");
+                return null;
+            }
+        }
+
         /// <summary>把缩略图下载到本地缓存（规避图床 hotlink 限制），失败返回 null（回退远程 URL）。</summary>
         private static async Task<string?> DownloadThumbAsync(string url, CancellationToken ct)
         {
@@ -747,34 +977,80 @@ namespace DynamicWallpaper.Providers
         /// <summary>下载字节并返回 HTTP 响应声明的字符集（若存在），用于正确解码文本页面。</summary>
         private static async Task<(byte[] bytes, string? charset)> GetBytesWithRedirectAsync(string url, CancellationToken ct)
         {
-            // HttpClient 的自动重定向对 307/308 在某些情况下不保留方法/header，这里做手动兜底。
-            for (int i = 0; i < 10; i++)
+            // 网络抖动：wallhaven 等海外站点经代理访问时 TLS 握手会被间歇性重置（SSL EOF），
+            // 一次失败直接透传会让用户看到"下载失败"，这里对连接类异常自动重试 3 次（间隔递增）。
+            Exception? lastError = null;
+            HttpResponseMessage? lastResp = null;
+            for (int attempt = 0; attempt < 3; attempt++)
             {
-                using var req = new HttpRequestMessage(HttpMethod.Get, url);
-                // 3gbizhi 图床对 Referer 较敏感，带上报头规避 hotlink 限制
-                if (url.Contains("3gbizhi.com", StringComparison.OrdinalIgnoreCase))
-                    req.Headers.Referrer = new Uri("https://desk.3gbizhi.com/");
-                // zhutix 图床（dl.zhutix.net）同理
-                if (url.Contains("zhutix", StringComparison.OrdinalIgnoreCase))
-                    req.Headers.Referrer = new Uri("https://zhutix.com/");
-
-                using var resp = await Client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
-
-                if ((int)resp.StatusCode is 307 or 308)
+                if (attempt > 0)
                 {
-                    var location = resp.Headers.Location;
-                    if (location == null) throw new HttpRequestException($"服务器返回 {(int)resp.StatusCode} 但没有 Location 头");
-                    url = location.IsAbsoluteUri ? location.ToString() : new Uri(new Uri(url), location).ToString();
-                    Logger.Log($"[爬虫] 跟随 {(int)resp.StatusCode} 重定向到: {url}");
-                    continue;
+                    Logger.Log($"[爬虫] 请求失败，第 {attempt + 1} 次重试: {url} -> {lastError?.Message}");
+                    await Task.Delay(600 * attempt, ct);
                 }
+                try
+                {
+                    // HttpClient 的自动重定向对 307/308 在某些情况下不保留方法/header，这里做手动兜底。
+                    for (int i = 0; i < 10; i++)
+                    {
+                        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                        // 3gbizhi 图床对 Referer 较敏感，带上报头规避 hotlink 限制
+                        if (url.Contains("3gbizhi.com", StringComparison.OrdinalIgnoreCase))
+                            req.Headers.Referrer = new Uri("https://desk.3gbizhi.com/");
+                        // zhutix 图床（dl.zhutix.net）同理
+                        if (url.Contains("zhutix", StringComparison.OrdinalIgnoreCase))
+                            req.Headers.Referrer = new Uri("https://zhutix.com/");
+                        // wallhaven 原图/缩略图 CDN（w.wallhaven.cc）对 Referer 敏感
+                        if (url.Contains("wallhaven.cc", StringComparison.OrdinalIgnoreCase))
+                            req.Headers.Referrer = new Uri("https://wallhaven.cc/");
 
-                resp.EnsureSuccessStatusCode();
-                var charset = resp.Content.Headers.ContentType?.CharSet;
-                var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
-                return (bytes, charset);
+                        using var resp = await Client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+                        lastResp = resp;
+
+                        if ((int)resp.StatusCode is 307 or 308)
+                        {
+                            var location = resp.Headers.Location;
+                            if (location == null) throw new HttpRequestException($"服务器返回 {(int)resp.StatusCode} 但没有 Location 头");
+                            url = location.IsAbsoluteUri ? location.ToString() : new Uri(new Uri(url), location).ToString();
+                            Logger.Log($"[爬虫] 跟随 {(int)resp.StatusCode} 重定向到: {url}");
+                            continue;
+                        }
+
+                        resp.EnsureSuccessStatusCode();
+                        var charset = resp.Content.Headers.ContentType?.CharSet;
+                        var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
+                        return (bytes, charset);
+                    }
+                    throw new HttpRequestException("重定向次数过多");
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (HttpRequestException hex) when (hex.StatusCode is (System.Net.HttpStatusCode)429 or System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.TooManyRequests)
+                {
+                    // wallhaven 等站点对单 IP 有严格速率限制（429/403），需按 Retry-After 退避后重试，
+                    // 否则短间隔重试只会持续被限流，导致下载/列表"假失败"。
+                    lastError = hex;
+                    if (attempt < 2)
+                    {
+                        int waitSec = 5;
+                        var retryAfter = lastResp?.Headers?.RetryAfter;
+                        if (retryAfter != null)
+                        {
+                            if (retryAfter.Delta.HasValue) waitSec = (int)Math.Ceiling(retryAfter.Delta.Value.TotalSeconds);
+                            else if (retryAfter.Date.HasValue) waitSec = (int)Math.Max(0, (retryAfter.Date.Value - DateTimeOffset.UtcNow).TotalSeconds);
+                        }
+                        Logger.Log($"[爬虫] 速率限制({(int)hex.StatusCode})，等待 {waitSec}s 后重试: {url}");
+                        await Task.Delay(waitSec * 1000, ct);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex;
+                }
             }
-            throw new HttpRequestException("重定向次数过多");
+            throw lastError ?? new HttpRequestException("请求失败");
         }
 
         private static async Task<string?> SaveFileAsync(string url, string saveDir, string title, CancellationToken ct, string? forceExt = null)
