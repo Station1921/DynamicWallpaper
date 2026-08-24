@@ -1,0 +1,60 @@
+<Window x:Class="DynamicWallpaper.UI.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="设置" Height="408" Width="380"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="#1B1B22"
+        Foreground="White">
+
+    <Window.Resources>
+        <!-- 深色主题单选按钮：选中圆点为蓝色（主题色 #4C8DFF），未选中为灰色描边 -->
+        <Style x:Key="FitRadio" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="#D8D8E0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <StackPanel Orientation="Horizontal">
+                            <Grid Width="16" Height="16" VerticalAlignment="Center">
+                                <Ellipse x:Name="Outer" Stroke="#5A5A66" StrokeThickness="1.5" Fill="Transparent"/>
+                                <Ellipse x:Name="Dot" Width="8" Height="8" Fill="#4C8DFF" Visibility="Collapsed"/>
+                            </Grid>
+                            <ContentPresenter Margin="8,0,0,0" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+                        </StackPanel>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Outer" Property="Stroke" Value="#4C8DFF"/>
+                                <Setter TargetName="Dot" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Outer" Property="Stroke" Value="#6FA5FF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <StackPanel Margin="22">
+        <TextBlock Text="设置" FontSize="16" FontWeight="Bold" Foreground="White" Margin="0,0,0,14"/>
+
+        <CheckBox x:Name="MuteBox" Content="视频壁纸静音" Foreground="#D8D8E0" Margin="0,0,0,10" Checked="Mute_Changed" Unchecked="Mute_Changed"/>
+        <CheckBox x:Name="FsBox" Content="前台全屏时自动暂停" Foreground="#D8D8E0" Margin="0,0,0,10" Checked="Fs_Changed" Unchecked="Fs_Changed"/>
+        <CheckBox x:Name="BatBox" Content="使用电池时自动暂停" Foreground="#D8D8E0" Margin="0,0,0,10" Checked="Bat_Changed" Unchecked="Bat_Changed"/>
+        <CheckBox x:Name="PerfBox" Content="性能模式（降低壁纸优先级与画质，减少游戏/前台卡顿）" Foreground="#D8D8E0" Margin="0,0,0,10" Checked="Perf_Changed" Unchecked="Perf_Changed"/>
+        <CheckBox x:Name="StartBox" Content="开机自启" Foreground="#D8D8E0" Margin="0,0,0,10" Checked="Start_Changed" Unchecked="Start_Changed"/>
+        <CheckBox x:Name="TrayBox" Content="点击关闭时最小化到托盘（不勾选则关闭直接退出）" Foreground="#D8D8E0" Margin="0,0,0,10" Checked="Tray_Changed" Unchecked="Tray_Changed"/>
+
+        <TextBlock Text="壁纸适应方式" FontSize="13" FontWeight="Bold" Foreground="#D8D8E0" Margin="0,6,0,8"/>
+        <StackPanel Margin="0,0,0,8">
+            <RadioButton x:Name="FitFill" Content="填充（铺满裁剪）" Style="{StaticResource FitRadio}" GroupName="FitGroup" Margin="0,0,0,6" Checked="Fit_Changed"/>
+            <RadioButton x:Name="FitFit" Content="适应（完整显示）" Style="{StaticResource FitRadio}" GroupName="FitGroup" Margin="0,0,0,6" Checked="Fit_Changed"/>
+            <RadioButton x:Name="FitCenter" Content="居中（原始大小）" Style="{StaticResource FitRadio}" GroupName="FitGroup" Checked="Fit_Changed"/>
+        </StackPanel>
+
+        <TextBlock Text="提示：壁纸渲染在桌面图标之后，自动暂停可释放 GPU/CPU。" Foreground="#7A7A85" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap"/>
+    </StackPanel>
+</Window>

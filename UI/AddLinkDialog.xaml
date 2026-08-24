@@ -1,0 +1,90 @@
+<Window x:Class="DynamicWallpaper.UI.AddLinkDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="从链接添加壁纸" Height="250" Width="560" WindowStartupLocation="CenterOwner"
+        Background="#1B1B22" ResizeMode="NoResize">
+
+    <Window.Resources>
+        <Style x:Key="PrimaryBtn" TargetType="Button">
+            <Setter Property="Background" Value="#4C8DFF"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="14,7"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#6BA0FF"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="GhostBtn" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#C8C8D2"/>
+            <Setter Property="BorderBrush" Value="#3A3A45"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="14,7"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#2A2A33"/>
+                    <Setter Property="Foreground" Value="White"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="粘贴【媒体直链】（视频/图片，通常以 .mp4 / .jpg 等结尾），软件会下载到本地并加入壁纸库。注意：必须是文件直链，不是网页地址——若站点（如 uiuiui.in）用 JS 加载视频，请用浏览器 F12 → 网络 → 筛选 Media 复制真正的 .mp4 链接。"
+                   Foreground="#C8C8D2" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,12"/>
+
+        <TextBox x:Name="UrlBox" Grid.Row="1" Background="#2A2A33" Foreground="White" BorderBrush="#3A3A45"
+                 Padding="10,8" FontSize="12" VerticalContentAlignment="Center"
+                 ToolTip="支持视频/图片直链。文件名或类型由链接与响应头推断。"/>
+
+        <ProgressBar x:Name="ProgressBar" Grid.Row="2" Height="6" Margin="0,14,0,4"
+                     Minimum="0" Maximum="100" Value="0" Background="#2A2A33" Foreground="#4C8DFF"/>
+
+        <Grid Grid.Row="3" Margin="0,6,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <CheckBox x:Name="ApplyChk" Grid.Column="0" Content="下载后直接设为壁纸" IsChecked="True"
+                      Foreground="#C8C8D2" FontSize="12" VerticalAlignment="Center"/>
+            <TextBlock x:Name="StatusText" Grid.Column="1" Text="" Foreground="#8A8A95" FontSize="11"
+                       VerticalAlignment="Center" Margin="12,0,0,0"/>
+            <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="DownloadBtn" Content="下载并添加" Style="{StaticResource PrimaryBtn}" Click="Download_Click" Margin="0,0,8,0"/>
+                <Button x:Name="CancelBtn" Content="取消" Style="{StaticResource GhostBtn}" Click="Cancel_Click"/>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>
