@@ -1,0 +1,27 @@
+# Build results
+[Bb]in/
+[Oo]bj/
+bin/
+obj/
+
+# Publish output
+publish/
+*_publish*/
+
+# Visual Studio / Rider / IDE
+.vs/
+.idea/
+*.user
+*.suo
+*.userprefs
+*.sln.docstates
+
+# Logs
+*.log
+app.log
+
+# OS / temp
+Thumbs.db
+Desktop.ini
+*.tmp
+.DS_Store

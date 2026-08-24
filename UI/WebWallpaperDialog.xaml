@@ -1,0 +1,38 @@
+<Window x:Class="DynamicWallpaper.UI.WebWallpaperDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="添加网页壁纸" Height="210" Width="460"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="#1B1B22" Foreground="White">
+
+    <StackPanel Margin="22">
+        <TextBlock Text="网页 / 3D 壁纸" FontSize="16" FontWeight="Bold" Margin="0,0,0,6"/>
+        <TextBlock Text="输入网址（http/https）或本地 HTML 文件路径：" Foreground="#9A9AA5" FontSize="12" Margin="0,0,0,10" TextWrapping="Wrap"/>
+
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBox x:Name="UrlBox" Grid.Column="0" Background="#2A2A33" Foreground="White"
+                     BorderBrush="#3A3A45" Padding="8,6" VerticalContentAlignment="Center"
+                     Text="https://"/>
+            <Button Grid.Column="1" Content="浏览" Margin="8,0,0,0" Padding="12,6" Background="#2A2A33"
+                    Foreground="White" BorderBrush="#3A3A45" BorderThickness="1" Cursor="Hand" Click="Browse_Click"/>
+        </Grid>
+
+        <TextBlock x:Name="Hint" Text="提示：WebGL/着色器类 3D 壁纸需本机已安装 WebView2 运行环境。" Foreground="#7A7A85" FontSize="11" Margin="0,10,0,0" TextWrapping="Wrap"/>
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
+            <Button Content="取消" Padding="16,7" Background="Transparent" Foreground="#C8C8D2"
+                    BorderBrush="#3A3A45" BorderThickness="1" Cursor="Hand" Click="Cancel_Click">
+                <Button.Resources><Style TargetType="Border"><Setter Property="CornerRadius" Value="6"/></Style></Button.Resources>
+            </Button>
+            <Button Content="添加" Margin="8,0,0,0" Padding="16,7" Background="#4C8DFF" Foreground="White"
+                    BorderThickness="0" Cursor="Hand" Click="Ok_Click">
+                <Button.Resources><Style TargetType="Border"><Setter Property="CornerRadius" Value="6"/></Style></Button.Resources>
+            </Button>
+        </StackPanel>
+    </StackPanel>
+</Window>
