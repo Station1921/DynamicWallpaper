@@ -20,6 +20,25 @@ namespace DynamicWallpaper.UI
             PerfBox.IsChecked = _config.PerformanceMode;
             StartBox.IsChecked = _config.RunOnStartup;
             TrayBox.IsChecked = _config.CloseToTray;
+
+            switch (_config.WallpaperFit)
+            {
+                case "fit": FitFit.IsChecked = true; break;
+                case "center": FitCenter.IsChecked = true; break;
+                default: FitFill.IsChecked = true; break;
+            }
+        }
+
+        protected override void OnSourceInitialized(EventArgs e)
+        {
+            base.OnSourceInitialized(e);
+            try
+            {
+                var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+                if (hwnd != IntPtr.Zero)
+                    DynamicWallpaper.Desktop.Win32.ApplyDwmDarkChrome(hwnd);
+            }
+            catch { /* DWM 属性不支持的旧系统上静默忽略 */ }
         }
 
         private void Mute_Changed(object sender, RoutedEventArgs e) => _manager.SetMute(MuteBox.IsChecked == true);
@@ -36,6 +55,16 @@ namespace DynamicWallpaper.UI
         {
             _config.CloseToTray = TrayBox.IsChecked == true;
             _config.Save();
+        }
+
+        private void Fit_Changed(object sender, RoutedEventArgs e)
+        {
+            string fit = FitFill.IsChecked == true ? "fill"
+                : FitFit.IsChecked == true ? "fit"
+                : "center";
+            _config.WallpaperFit = fit;
+            _config.Save();
+            _manager.SyncFitMode();
         }
     }
 }
