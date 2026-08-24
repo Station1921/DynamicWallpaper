@@ -20,9 +20,8 @@ namespace DynamicWallpaper.UI
         /// <summary>用户是否勾选“下载后直接设为壁纸”。</summary>
         public bool ApplyAfter { get; private set; }
 
-        private static readonly string SaveDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "DynamicWallpaper", "Wallpapers");
+        // 下载的壁纸保存到程序根目录 Wallpapers 子目录，不写入系统用户目录（C 盘）。
+        private static readonly string SaveDir = Path.Combine(AppPaths.RootDirectory, "Wallpapers");
 
         private static readonly HashSet<string> KnownExt = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -49,6 +48,18 @@ namespace DynamicWallpaper.UI
         public AddLinkDialog()
         {
             InitializeComponent();
+        }
+
+        protected override void OnSourceInitialized(EventArgs e)
+        {
+            base.OnSourceInitialized(e);
+            try
+            {
+                var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+                if (hwnd != IntPtr.Zero)
+                    DynamicWallpaper.Desktop.Win32.ApplyDwmDarkChrome(hwnd);
+            }
+            catch { /* DWM 属性不支持的旧系统上静默忽略 */ }
         }
 
         private async void Download_Click(object sender, RoutedEventArgs e)
