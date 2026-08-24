@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Reflection;
+using DynamicWallpaper.Core;
 using DynamicWallpaper.Models;
 
 namespace DynamicWallpaper.Providers
@@ -18,7 +19,7 @@ namespace DynamicWallpaper.Providers
         {
             try
             {
-                string dll = Path.Combine(AppContext.BaseDirectory, "DynamicWallpaper.Web.dll");
+                string dll = Path.Combine(AppPaths.RootDirectory, "DynamicWallpaper.Web.dll");
                 if (File.Exists(dll))
                 {
                     var asm = Assembly.LoadFrom(dll);
