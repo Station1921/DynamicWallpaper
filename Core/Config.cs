@@ -16,6 +16,10 @@ namespace DynamicWallpaper.Core
         public bool PerformanceMode { get; set; } = false;
         public bool RunOnStartup { get; set; } = false;
         public bool CloseToTray { get; set; } = true;
+
+        /// <summary>壁纸适应方式：fill=铺满裁剪 / fit=完整显示 / center=原始居中。默认 fill（保持旧版行为）。</summary>
+        public string WallpaperFit { get; set; } = "fill";
+
         public List<string> Library { get; set; } = new();
 
         /// <summary>每屏壁纸分配（持久化，重启后自动恢复）。</summary>
@@ -27,8 +31,9 @@ namespace DynamicWallpaper.Core
         /// <summary>程序启动前系统原本的静态壁纸路径（备用：当注册表值被清空时使用）。</summary>
         public string OriginalWallpaper { get; set; } = "";
 
+        // 配置文件生成在程序根目录（exe 所在目录），不写入系统用户目录（C 盘）。
         private static readonly string FilePath =
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DynamicWallpaper", "config.json");
+            Path.Combine(AppPaths.RootDirectory, "config.json");
 
         public static Config Load()
         {
