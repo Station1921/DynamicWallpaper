@@ -12,6 +12,18 @@ namespace DynamicWallpaper.UI
             InitializeComponent();
         }
 
+        protected override void OnSourceInitialized(EventArgs e)
+        {
+            base.OnSourceInitialized(e);
+            try
+            {
+                var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+                if (hwnd != IntPtr.Zero)
+                    DynamicWallpaper.Desktop.Win32.ApplyDwmDarkChrome(hwnd);
+            }
+            catch { /* DWM 属性不支持的旧系统上静默忽略 */ }
+        }
+
         private void Browse_Click(object sender, RoutedEventArgs e)
         {
             var dlg = new Microsoft.Win32.OpenFileDialog
