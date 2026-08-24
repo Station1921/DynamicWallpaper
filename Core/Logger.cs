@@ -4,14 +4,12 @@ using System.IO;
 namespace DynamicWallpaper.Core
 {
     /// <summary>
-    /// 极简日志：写入 %LOCALAPPDATA%\DynamicWallpaper\app.log，
+    /// 极简日志：写入程序根目录 app.log（exe 所在目录），
     /// 便于排查下载失败、注入异常等问题。失败不影响主流程。
     /// </summary>
     internal static class Logger
     {
-        private static readonly string LogPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "DynamicWallpaper", "app.log");
+        private static readonly string LogPath = Path.Combine(AppPaths.RootDirectory, "app.log");
 
         public static string LogFilePath => LogPath;
 
@@ -28,9 +26,10 @@ namespace DynamicWallpaper.Core
 
         public static void Log(string context, Exception ex)
         {
-            Log($"[{context}] {ex.GetType().Name}: {ex.Message}");
+            // 记录完整异常（含堆栈），便于定位白屏等 UI 线程异常的真实来源
+            Log($"[{context}] {ex}");
             if (ex.InnerException != null)
-                Log($"[{context}] Inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
+                Log($"[{context}] Inner: {ex.InnerException}");
         }
 
         public static void Clear()
