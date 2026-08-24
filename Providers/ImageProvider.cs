@@ -24,14 +24,32 @@ namespace DynamicWallpaper.Providers
         public WallpaperType Type => WallpaperType.Image;
         public IntPtr Handle => _window == null ? IntPtr.Zero : new WindowInteropHelper(_window).EnsureHandle();
 
+        /// <summary>壁纸适应方式：fill=铺满裁剪 / fit=完整显示 / center=原始居中。由 WallpaperManager 在切换时注入。</summary>
+        public static string FitMode { get; set; } = "fill";
+
+        /// <summary>把 FitMode 映射为 WPF Image Stretch / StretchDirection。</summary>
+        private static (Stretch Stretch, StretchDirection Direction) BuildImageStretch()
+        {
+            return FitMode switch
+            {
+                "fit" => (Stretch.Uniform, StretchDirection.DownOnly),
+                "center" => (Stretch.None, StretchDirection.Both),
+                _ => (Stretch.UniformToFill, StretchDirection.Both)
+            };
+        }
+
         public void Show(string path, Rectangle bounds)
         {
             _path = path;
             _window = new RenderWindow();
             int maxPixel = Math.Max(bounds.Width, bounds.Height);
+            var (stretch, direction) = BuildImageStretch();
             _image = new Image
             {
-                Stretch = Stretch.UniformToFill,
+                Stretch = stretch,
+                StretchDirection = direction,
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+                VerticalAlignment = System.Windows.VerticalAlignment.Center,
                 Source = LoadImage(path, maxPixel)
             };
             _window.RootGrid.Children.Add(_image);
@@ -44,6 +62,15 @@ namespace DynamicWallpaper.Providers
         {
             WorkerWInjector.Attach(Handle, workerw, bounds);
             _window?.Show(); // 成功挂接到桌面壁纸层后再显示
+        }
+
+        /// <summary>运行时切换适应方式：立即更新已渲染图片的 Stretch（须在 UI 线程调用）。</summary>
+        public void ApplyFitMode()
+        {
+            if (_image == null) return;
+            var (stretch, direction) = BuildImageStretch();
+            _image.Stretch = stretch;
+            _image.StretchDirection = direction;
         }
 
         public void Play() { }
