@@ -378,7 +378,7 @@ namespace DynamicWallpaper.UI
             {
                 var bytes = await DownloadBytesAsync(url, ct);
                 if (bytes == null || bytes.Length == 0) return null;
-                var dir = Path.Combine(AppContext.BaseDirectory, "Wallpapers", "hovercache");
+                var dir = Path.Combine(AppPaths.RootDirectory, "Wallpapers", "hovercache");
                 Directory.CreateDirectory(dir);
                 var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(url))).Substring(0, 16).ToLowerInvariant();
                 var ext = Path.GetExtension(new Uri(url).AbsolutePath);
