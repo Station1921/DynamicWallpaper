@@ -40,10 +40,33 @@ namespace DynamicWallpaper.Models
                 _downloadedPath = value;
                 OnPropertyChanged(nameof(DownloadedPath));
                 OnPropertyChanged(nameof(IsDownloaded));
+                OnPropertyChanged(nameof(ShowSetDesktop));
+                OnPropertyChanged(nameof(ShowClearDesktop));
             }
         }
 
         public bool IsDownloaded => !string.IsNullOrEmpty(_downloadedPath);
+
+        private bool _isApplied;
+        /// <summary>该壁纸当前是否已应用为桌面壁纸（用于在线卡片按钮"设为桌面 ↔ 解除壁纸"状态同步）。</summary>
+        public bool IsApplied
+        {
+            get => _isApplied;
+            set
+            {
+                if (_isApplied == value) return;
+                _isApplied = value;
+                OnPropertyChanged(nameof(IsApplied));
+                OnPropertyChanged(nameof(ShowSetDesktop));
+                OnPropertyChanged(nameof(ShowClearDesktop));
+            }
+        }
+
+        /// <summary>显示"设为桌面"按钮：已下载且尚未应用。</summary>
+        public bool ShowSetDesktop => IsDownloaded && !_isApplied;
+
+        /// <summary>显示"解除壁纸"按钮：已下载且已应用为桌面。</summary>
+        public bool ShowClearDesktop => IsDownloaded && _isApplied;
 
         public override string ToString() => $"[{Source}] {Title}";
 
