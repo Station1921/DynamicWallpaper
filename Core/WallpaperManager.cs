@@ -49,6 +49,11 @@ namespace DynamicWallpaper.Core
         private static readonly TimeSpan FadeDuration = TimeSpan.FromMilliseconds(300);
         private const int FadeStepMs = 30;
 
+        /// <summary>判断路径是否为 http/https 远程 URL。</summary>
+        private static bool IsRemoteUrl(string path) =>
+            Uri.TryCreate(path, UriKind.Absolute, out var u) &&
+            (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps);
+
         /// <summary>程序启动前系统原本的静态壁纸路径，解除桌面时恢复。</summary>
         private string _originalWallpaper = "";
 
@@ -192,7 +197,10 @@ namespace DynamicWallpaper.Core
                 // 通过 WebView2 过渡窗口把 S 渐入覆盖 A，最后统一清理，形成 A→S 无缝直切。
                 if (type == WallpaperType.Image)
                 {
-                    if (!File.Exists(path))
+                    bool isRemoteUrl = IsRemoteUrl(path);
+
+                    // 本地图片必须存在；远程 URL（http/https）直接走 WebView2 渲染，不检查文件存在性。
+                    if (!isRemoteUrl && !File.Exists(path))
                         throw new InvalidOperationException("壁纸文件不存在：" + path);
 
                     var prevProvider = st.Provider;
@@ -201,8 +209,12 @@ namespace DynamicWallpaper.Core
                     // WebView2 不可用时（缺 WebView2Loader.dll / VC++ 运行库 / WebView2 Runtime）：
                     // 静态壁纸降级为系统 API 直设（IDesktopWallpaper/SPI），Win10 传统桌面完全可靠，
                     // 不依赖 WebView2 窗口层——保证动态壁纸失效的环境下静态壁纸仍可设置。
+                    // 注意：系统 API 不支持远程 URL，因此在线壁纸必须依赖 WebView2。
                     if (!await VideoProvider.IsWebView2AvailableAsync())
                     {
+                        if (isRemoteUrl)
+                            throw new InvalidOperationException("在线壁纸需要 WebView2 运行库，请确认已安装 Microsoft Edge WebView2 Runtime。");
+
                         // 当前屏若有窗口层壁纸在运行，先销毁（系统壁纸层直接承载静态图，无需叠化）
                         if (prevProvider != null)
                         {
