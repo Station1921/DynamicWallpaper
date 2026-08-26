@@ -494,7 +494,7 @@
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                     <Button Content="添加壁纸" Style="{StaticResource PrimaryBtn}" Click="Add_Click" Margin="0,0,8,0"/>
-                    <Button Content="添加链接" Style="{StaticResource GhostBtn}" Click="AddLink_Click" Margin="0,0,8,0" ToolTip="从网络直链下载壁纸（如视频 .mp4）"/>
+                    <Button Content="网络壁纸" Style="{StaticResource GhostBtn}" Click="AddLink_Click" Margin="0,0,8,0" ToolTip="从网络直链添加壁纸（如视频 .mp4）"/>
                     <Button Content="设置" Style="{StaticResource GhostBtn}" Click="Settings_Click"/>
                 </StackPanel>
             </Grid>
@@ -515,8 +515,9 @@
                             </ItemsControl.ItemsPanel>
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate DataType="{x:Type models:WallpaperItem}">
-                                    <Border Style="{StaticResource Card}" Width="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType=Window}, Path=CardWidth}" Height="150" Margin="6"
-                                            MouseRightButtonUp="Card_RightClick" Cursor="Hand" SnapsToDevicePixels="True">
+                                    <Border Width="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType=Window}, Path=CardWidth}" Height="150" Margin="6"
+                                            MouseRightButtonUp="Card_RightClick" Cursor="Hand" SnapsToDevicePixels="True"
+                                            Style="{StaticResource Card}">
                                         <Grid>
                                             <!-- 把内容裁成与卡片内圆角一致，避免图片/黑底盖住圆角描边，造成"底边两个角被裁"的观感 -->
                                             <Grid.Clip>
@@ -557,10 +558,225 @@
                                                     </Style>
                                                 </local:MediaHoverImage.Style>
                                             </local:MediaHoverImage>
-                                            <Border Background="#15151B"
-                                                    Visibility="{Binding Thumbnail, Converter={StaticResource NullToVisibility}, ConverterParameter=inverse}">
-                                                <TextBlock Text="{Binding TypeLabel}" Foreground="#6A6A75" FontSize="13"
-                                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                            <!-- 无缩略图封面：网络壁纸使用多彩动态流光封面，普通壁纸使用静态深色底 -->
+                                            <Border Visibility="{Binding Thumbnail, Converter={StaticResource NullToVisibility}, ConverterParameter=inverse}">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Background" Value="#15151B"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsOnlineUrl}" Value="True">
+                                                                <Setter Property="Background" Value="Transparent"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <Grid>
+                                                    <!-- 普通壁纸：静态类型标签 -->
+                                                    <TextBlock Foreground="#6A6A75" FontSize="13"
+                                                               HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Setter Property="Text" Value="{Binding TypeLabel}"/>
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding IsOnlineUrl}" Value="True">
+                                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+
+                                                    <!-- 网络壁纸：弥散流体 Aurora 封面 -->
+                                                    <Border Visibility="{Binding IsOnlineUrl, Converter={StaticResource BoolToVisibility}}"
+                                                            ClipToBounds="True">
+                                                        <Border.Background>
+                                                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1" SpreadMethod="Repeat">
+                                                                <GradientStop Color="#0B1020" Offset="0"/>
+                                                                <GradientStop Color="#121A33" Offset="0.35"/>
+                                                                <GradientStop Color="#1A2744" Offset="0.65"/>
+                                                                <GradientStop Color="#0B1020" Offset="1"/>
+                                                            </LinearGradientBrush>
+                                                        </Border.Background>
+                                                        <Border.Triggers>
+                                                            <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                                                <BeginStoryboard>
+                                                                    <Storyboard RepeatBehavior="Forever">
+                                                                        <DoubleAnimation Storyboard.TargetProperty="Background.GradientStops[0].Offset" From="0" To="1" Duration="0:0:3.5"/>
+                                                                        <DoubleAnimation Storyboard.TargetProperty="Background.GradientStops[1].Offset" From="0.35" To="1.35" Duration="0:0:3.5"/>
+                                                                        <DoubleAnimation Storyboard.TargetProperty="Background.GradientStops[2].Offset" From="0.65" To="1.65" Duration="0:0:3.5"/>
+                                                                        <DoubleAnimation Storyboard.TargetProperty="Background.GradientStops[3].Offset" From="1" To="2" Duration="0:0:3.5"/>
+                                                                    </Storyboard>
+                                                                </BeginStoryboard>
+                                                            </EventTrigger>
+                                                        </Border.Triggers>
+
+                                                        <Grid ClipToBounds="True">
+                                                            <!-- 弥散流体 blob 层：多个模糊彩色椭圆漂移/呼吸，入场先渐入避免闪烁 -->
+                                                            <!-- Blob 1：左上蓝紫 -->
+                                                            <Ellipse Width="150" Height="150" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="-50,-40,0,0" IsHitTestVisible="False" Opacity="0">
+                                                                <Ellipse.Fill>
+                                                                    <RadialGradientBrush>
+                                                                <GradientStop Color="#E54C8DFF" Offset="0"/>
+                                                                <GradientStop Color="#75A855F7" Offset="0.55"/>
+                                                                <GradientStop Color="#00000000" Offset="1"/>
+                                                                    </RadialGradientBrush>
+                                                                </Ellipse.Fill>
+                                                                <Ellipse.Effect>
+                                                                    <BlurEffect Radius="55"/>
+                                                                </Ellipse.Effect>
+                                                                <Ellipse.RenderTransform>
+                                                                    <TransformGroup>
+                                                                        <TranslateTransform/>
+                                                                        <ScaleTransform CenterX="75" CenterY="75"/>
+                                                                    </TransformGroup>
+                                                                </Ellipse.RenderTransform>
+                                                                <Ellipse.Triggers>
+                                                                    <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                                                        <BeginStoryboard>
+                                                                            <Storyboard>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="Opacity" From="0" To="0.85" Duration="0:0:1.5" BeginTime="0:0:0"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="RenderTransform.Children[0].X" From="-20" To="35" Duration="0:0:4.5" BeginTime="0:0:1.2" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="RenderTransform.Children[0].Y" From="-15" To="30" Duration="0:0:5.5" BeginTime="0:0:1.2" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="RenderTransform.Children[1].ScaleX" From="0.9" To="1.15" Duration="0:0:3.5" BeginTime="0:0:1.2" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="RenderTransform.Children[1].ScaleY" From="0.9" To="1.15" Duration="0:0:3.5" BeginTime="0:0:1.2" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="Opacity" From="0.85" To="1" Duration="0:0:2.5" BeginTime="0:0:1.2" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                            </Storyboard>
+                                                                        </BeginStoryboard>
+                                                                    </EventTrigger>
+                                                                </Ellipse.Triggers>
+                                                            </Ellipse>
+
+                                                            <!-- Blob 2：右下粉青 -->
+                                                            <Ellipse Width="170" Height="170" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,-60,-50" IsHitTestVisible="False" Opacity="0">
+                                                                <Ellipse.Fill>
+                                                                    <RadialGradientBrush>
+                                                                <GradientStop Color="#F0EC4899" Offset="0"/>
+                                                                <GradientStop Color="#A006B6D4" Offset="0.55"/>
+                                                                <GradientStop Color="#00000000" Offset="1"/>
+                                                                    </RadialGradientBrush>
+                                                                </Ellipse.Fill>
+                                                                <Ellipse.Effect>
+                                                                    <BlurEffect Radius="60"/>
+                                                                </Ellipse.Effect>
+                                                                <Ellipse.RenderTransform>
+                                                                    <TransformGroup>
+                                                                        <TranslateTransform/>
+                                                                        <ScaleTransform CenterX="85" CenterY="85"/>
+                                                                    </TransformGroup>
+                                                                </Ellipse.RenderTransform>
+                                                                <Ellipse.Triggers>
+                                                                    <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                                                        <BeginStoryboard>
+                                                                            <Storyboard>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="Opacity" From="0" To="0.8" Duration="0:0:1.6" BeginTime="0:0:0.4"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="RenderTransform.Children[0].X" From="25" To="-40" Duration="0:0:5" BeginTime="0:0:1.6" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="RenderTransform.Children[0].Y" From="20" To="-35" Duration="0:0:4.5" BeginTime="0:0:1.6" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="RenderTransform.Children[1].ScaleX" From="1.0" To="1.25" Duration="0:0:3.5" BeginTime="0:0:1.6" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="RenderTransform.Children[1].ScaleY" From="1.0" To="1.25" Duration="0:0:3.5" BeginTime="0:0:1.6" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="Opacity" From="0.8" To="1" Duration="0:0:2.5" BeginTime="0:0:1.6" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                            </Storyboard>
+                                                                        </BeginStoryboard>
+                                                                    </EventTrigger>
+                                                                </Ellipse.Triggers>
+                                                            </Ellipse>
+
+                                                            <!-- Blob 3：中部青蓝 -->
+                                                            <Ellipse Width="130" Height="130" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="40,-30,-40,30" IsHitTestVisible="False" Opacity="0">
+                                                                <Ellipse.Fill>
+                                                                    <RadialGradientBrush>
+                                                                <GradientStop Color="#D006B6D4" Offset="0"/>
+                                                                <GradientStop Color="#704C8DFF" Offset="0.55"/>
+                                                                <GradientStop Color="#00000000" Offset="1"/>
+                                                                    </RadialGradientBrush>
+                                                                </Ellipse.Fill>
+                                                                <Ellipse.Effect>
+                                                                    <BlurEffect Radius="50"/>
+                                                                </Ellipse.Effect>
+                                                                <Ellipse.RenderTransform>
+                                                                    <TransformGroup>
+                                                                        <TranslateTransform/>
+                                                                        <ScaleTransform CenterX="65" CenterY="65"/>
+                                                                    </TransformGroup>
+                                                                </Ellipse.RenderTransform>
+                                                                <Ellipse.Triggers>
+                                                                    <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                                                        <BeginStoryboard>
+                                                                            <Storyboard>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="Opacity" From="0" To="0.75" Duration="0:0:1.7" BeginTime="0:0:0.8"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="RenderTransform.Children[0].X" From="-30" To="30" Duration="0:0:5.5" BeginTime="0:0:1.7" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="RenderTransform.Children[0].Y" From="20" To="-25" Duration="0:0:5" BeginTime="0:0:1.7" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="RenderTransform.Children[1].ScaleX" From="0.85" To="1.2" Duration="0:0:3.5" BeginTime="0:0:1.7" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="RenderTransform.Children[1].ScaleY" From="0.85" To="1.2" Duration="0:0:3.5" BeginTime="0:0:1.7" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="Opacity" From="0.75" To="0.95" Duration="0:0:2.5" BeginTime="0:0:1.7" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                            </Storyboard>
+                                                                        </BeginStoryboard>
+                                                                    </EventTrigger>
+                                                                </Ellipse.Triggers>
+                                                            </Ellipse>
+
+                                                            <!-- Blob 4：底部紫色柔光 -->
+                                                            <Ellipse Width="120" Height="120" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="20,0,0,-30" IsHitTestVisible="False" Opacity="0">
+                                                                <Ellipse.Fill>
+                                                                    <RadialGradientBrush>
+                                                                <GradientStop Color="#D8A855F7" Offset="0"/>
+                                                                <GradientStop Color="#90EC4899" Offset="0.55"/>
+                                                                <GradientStop Color="#00000000" Offset="1"/>
+                                                                    </RadialGradientBrush>
+                                                                </Ellipse.Fill>
+                                                                <Ellipse.Effect>
+                                                                    <BlurEffect Radius="48"/>
+                                                                </Ellipse.Effect>
+                                                                <Ellipse.RenderTransform>
+                                                                    <TransformGroup>
+                                                                        <TranslateTransform/>
+                                                                        <ScaleTransform CenterX="60" CenterY="60"/>
+                                                                    </TransformGroup>
+                                                                </Ellipse.RenderTransform>
+                                                                <Ellipse.Triggers>
+                                                                    <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                                                        <BeginStoryboard>
+                                                                            <Storyboard>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="Opacity" From="0" To="0.65" Duration="0:0:1.8" BeginTime="0:0:1.2"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="RenderTransform.Children[0].X" From="15" To="-25" Duration="0:0:5" BeginTime="0:0:1.8" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="RenderTransform.Children[0].Y" From="-20" To="15" Duration="0:0:5.5" BeginTime="0:0:1.8" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="RenderTransform.Children[1].ScaleX" From="0.9" To="1.15" Duration="0:0:4" BeginTime="0:0:1.8" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="RenderTransform.Children[1].ScaleY" From="0.9" To="1.15" Duration="0:0:4" BeginTime="0:0:1.8" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                                <DoubleAnimation Storyboard.TargetProperty="Opacity" From="0.65" To="0.9" Duration="0:0:3" BeginTime="0:0:1.8" RepeatBehavior="Forever" AutoReverse="True"/>
+                                                                            </Storyboard>
+                                                                        </BeginStoryboard>
+                                                                    </EventTrigger>
+                                                                </Ellipse.Triggers>
+                                                            </Ellipse>
+
+                                                            <!-- 柔化覆盖层：让 blob 边缘更弥散，尽量少压暗颜色 -->
+                                                            <Border Background="#06000000" IsHitTestVisible="False"/>
+
+                                                            <!-- 中心光晕 -->
+                                                            <Ellipse Width="110" Height="110" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-8,0,0" IsHitTestVisible="False" Opacity="0.75">
+                                                                <Ellipse.Fill>
+                                                                    <RadialGradientBrush>
+                                                                        <GradientStop Color="#85FFFFFF" Offset="0"/>
+                                                                        <GradientStop Color="#404C8DFF" Offset="0.5"/>
+                                                                        <GradientStop Color="#00000000" Offset="1"/>
+                                                                    </RadialGradientBrush>
+                                                                </Ellipse.Fill>
+                                                                <Ellipse.Effect>
+                                                                    <BlurEffect Radius="35"/>
+                                                                </Ellipse.Effect>
+                                                            </Ellipse>
+
+                                                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Orientation="Vertical">
+                                                                <TextBlock Text="网络" FontSize="15" FontWeight="SemiBold" Foreground="#F0F4FF"
+                                                                           HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                                    <TextBlock.Effect>
+                                                                        <DropShadowEffect Color="#4C8DFF" BlurRadius="16" ShadowDepth="0" Opacity="0.85"/>
+                                                                    </TextBlock.Effect>
+                                                                </TextBlock>
+                                                                <TextBlock Text="Online" FontSize="9" Foreground="#A8B8E8" Margin="0,4,0,0" HorizontalAlignment="Center" Opacity="0.9"/>
+                                                            </StackPanel>
+                                                        </Grid>
+                                                    </Border>
+                                                </Grid>
                                             </Border>
 
                                             <!-- 已应用到的屏幕徽标 -->
@@ -570,10 +786,31 @@
                                                 <TextBlock Text="{Binding ActiveScreens}" Foreground="White" FontSize="10"/>
                                             </Border>
 
-                                            <!-- 动态/静态标签 -->
-                                            <Border Background="#CC000000" CornerRadius="4" Padding="6,2"
+                                            <!-- 动态/静态/网络标签 -->
+                                            <Border CornerRadius="4" Padding="6,2"
                                                     HorizontalAlignment="Right" VerticalAlignment="Top" Margin="6">
-                                                <TextBlock Text="{Binding MotionLabel}" Foreground="White" FontSize="10"/>
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Background" Value="#CC000000"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsOnlineUrl}" Value="True">
+                                                                <Setter Property="Background" Value="#CCE91E63"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <TextBlock Foreground="White" FontSize="10">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Text" Value="{Binding MotionLabel}"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsOnlineUrl}" Value="True">
+                                                                    <Setter Property="Text" Value="网络"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
                                             </Border>
 
                                             <Border VerticalAlignment="Bottom" Background="#CC000000" Padding="8" CornerRadius="0,0,9,9">
@@ -585,6 +822,44 @@
                                                             Padding="10,4" FontSize="11" Click="ClearWallpaper_Click"
                                                             Visibility="{Binding IsActive, Converter={StaticResource BoolToVisibility}}"/>
                                                 </StackPanel>
+                                            </Border>
+
+                                            <!-- 网络壁纸流光边框：独立覆盖层，仅在线壁纸显示。
+                                                 其 BorderBrush 为直接元素属性（不会被 Style/Setter 冻结），用 EventTrigger 做流光，安全无崩溃。 -->
+                                            <Border Grid.ZIndex="5" BorderThickness="2" CornerRadius="9"
+                                                    IsHitTestVisible="False" SnapsToDevicePixels="True">
+                                                <Border.BorderBrush>
+                                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1" SpreadMethod="Repeat">
+                                                        <GradientStop Color="#4C8DFF" Offset="0"/>
+                                                        <GradientStop Color="#A855F7" Offset="0.25"/>
+                                                        <GradientStop Color="#EC4899" Offset="0.5"/>
+                                                        <GradientStop Color="#06B6D4" Offset="0.75"/>
+                                                        <GradientStop Color="#4C8DFF" Offset="1"/>
+                                                    </LinearGradientBrush>
+                                                </Border.BorderBrush>
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsOnlineUrl}" Value="True">
+                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <Border.Triggers>
+                                                    <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                                        <BeginStoryboard>
+                                                            <Storyboard RepeatBehavior="Forever">
+                                                                <DoubleAnimation Storyboard.TargetProperty="BorderBrush.GradientStops[0].Offset" From="0" To="1" Duration="0:0:3"/>
+                                                                <DoubleAnimation Storyboard.TargetProperty="BorderBrush.GradientStops[1].Offset" From="0.25" To="1.25" Duration="0:0:3"/>
+                                                                <DoubleAnimation Storyboard.TargetProperty="BorderBrush.GradientStops[2].Offset" From="0.5" To="1.5" Duration="0:0:3"/>
+                                                                <DoubleAnimation Storyboard.TargetProperty="BorderBrush.GradientStops[3].Offset" From="0.75" To="1.75" Duration="0:0:3"/>
+                                                                <DoubleAnimation Storyboard.TargetProperty="BorderBrush.GradientStops[4].Offset" From="1" To="2" Duration="0:0:3"/>
+                                                            </Storyboard>
+                                                        </BeginStoryboard>
+                                                    </EventTrigger>
+                                                </Border.Triggers>
                                             </Border>
                                         </Grid>
                                     </Border>
