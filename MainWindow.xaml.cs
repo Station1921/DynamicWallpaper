@@ -108,7 +108,11 @@ namespace DynamicWallpaper
             _manager.Start();
 
             foreach (var p in _config.Library)
-                if (File.Exists(p)) Library.Add(new WallpaperItem(p, ProviderFactory.DetectType(p)));
+            {
+                // 本地文件必须存在才加载；网络直链（http/https）直接加入库，不检查文件存在性
+                if (File.Exists(p) || IsWebUrl(p))
+                    Library.Add(new WallpaperItem(p, ProviderFactory.DetectType(p)));
+            }
 
             InitScreenSelector();
             RefreshEmpty();
@@ -275,22 +279,9 @@ namespace DynamicWallpaper
                 "HEVC 转码", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
             if (choice != MessageBoxResult.Yes) return string.Empty;
 
-            // ffmpeg 查找：程序目录 → PATH/常见位置 → 全盘扫描 → 内嵌解压兜底（详见 AppPaths.EnsureFfmpeg）。
+            // ffmpeg 查找：程序目录 → PATH/常见位置 → 内嵌解压兜底（详见 AppPaths.EnsureFfmpeg）。
             // 平时浏览库/设壁纸完全不触发此查找，零开销；仅此处（HEVC 转码）才查一次。
-            // 全盘扫描可能耗时较长：放后台线程避免界面无响应，期间显示"准备中…"进度窗口。
-            TranscodeProgressWindow? prepWin = null;
-            string? ffmpeg;
-            try
-            {
-                prepWin = new TranscodeProgressWindow(Path.GetFileName(path));
-                prepWin.Show();
-                prepWin.SetIndeterminate("准备中…");
-                ffmpeg = await Task.Run(() => AppPaths.EnsureFfmpeg());
-            }
-            finally
-            {
-                prepWin?.Close();
-            }
+            string? ffmpeg = AppPaths.EnsureFfmpeg();
             if (string.IsNullOrEmpty(ffmpeg))
             {
                 MessageBox.Show("未找到 ffmpeg.exe，且内置 ffmpeg 解压失败。该视频未添加。",
@@ -339,7 +330,7 @@ namespace DynamicWallpaper
             try
             {
                 var psi = new ProcessStartInfo(ffmpeg,
-                    $"-y -nostats -progress pipe:1 -i \"{path}\" -c:v libx264 -crf 22 -preset medium -c:a copy -movflags +faststart \"{outPath}\"")
+                    $"-y -nostats -progress pipe:1 -i \"{path}\" -c:v libx264 -crf 22 -preset medium -c:a copy \"{outPath}\"")
                 {
                     UseShellExecute = false,
                     CreateNoWindow = true,
@@ -418,18 +409,43 @@ namespace DynamicWallpaper
                 foreach (var f in dlg.FileNames) await AddPathAsync(f);
         }
 
+        /// <summary>判断路径是否为 http/https 网络直链。</summary>
+        private static bool IsWebUrl(string path) =>
+            Uri.TryCreate(path, UriKind.Absolute, out var u) &&
+            (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps);
+
         private async void AddLink_Click(object sender, RoutedEventArgs e)
         {
             var dlg = new AddLinkDialog { Owner = this };
-            if (dlg.ShowDialog() == true && !string.IsNullOrEmpty(dlg.DownloadedPath))
+            if (dlg.ShowDialog() != true) return;
+
+            // 在线直播模式：直接以 URL 作为路径创建壁纸项，无需下载
+            if (dlg.IsOnline && !string.IsNullOrEmpty(dlg.OnlineUrl))
             {
-                var path = dlg.DownloadedPath!;
-                await AddPathAsync(path);
-                if (dlg.ApplyAfter && Library.FirstOrDefault(i => i.Path == path) is { } item)
-                    await ApplyItemAsync(item, SelectedScreen());
+                var url = dlg.OnlineUrl!;
+                if (Library.Any(i => i.Path.Equals(url, StringComparison.OrdinalIgnoreCase))) return;
+
+                var onlineItem = new WallpaperItem(url, dlg.OnlineType);
+                Library.Add(onlineItem);
+                if (!_config.Library.Contains(url)) _config.Library.Add(url);
+                _config.Save();
+                Logger.Log($"在线壁纸已加入库：{url}（{dlg.OnlineType}）");
+                if (dlg.ApplyAfter)
+                    await ApplyItemAsync(onlineItem, SelectedScreen());
+                RefreshEmpty();
                 RefreshActiveBadges();
                 SetStatusText(StatusSummary());
+                return;
             }
+
+            // 下载模式
+            if (string.IsNullOrEmpty(dlg.DownloadedPath)) return;
+            var path = dlg.DownloadedPath!;
+            await AddPathAsync(path);
+            if (dlg.ApplyAfter && Library.FirstOrDefault(i => i.Path == path) is { } item)
+                await ApplyItemAsync(item, SelectedScreen());
+            RefreshActiveBadges();
+            SetStatusText(StatusSummary());
         }
 
         // ---------- 应用壁纸 ----------
