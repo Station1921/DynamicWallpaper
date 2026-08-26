@@ -49,6 +49,7 @@ namespace DynamicWallpaper.UI
         {
             _config.RunOnStartup = StartBox.IsChecked == true;
             _config.Save();
+            Logger.Log($"[Settings] 开机自启开关：{_config.RunOnStartup}，注册表实际状态：{_config.IsStartupRegistered()}");
         }
 
         private void Tray_Changed(object sender, RoutedEventArgs e)
