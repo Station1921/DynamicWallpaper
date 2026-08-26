@@ -9,6 +9,7 @@ using System.Windows;
 using System.Windows.Controls;
 using MessageBox = System.Windows.MessageBox;
 using DynamicWallpaper.Core;
+using DynamicWallpaper.Models;
 
 namespace DynamicWallpaper.UI
 {
@@ -17,8 +18,17 @@ namespace DynamicWallpaper.UI
         /// <summary>下载完成后的本地路径；为空表示未成功。</summary>
         public string? DownloadedPath { get; private set; }
 
-        /// <summary>用户是否勾选“下载后直接设为壁纸”。</summary>
+        /// <summary>用户是否勾选“添加后直接设为壁纸”。</summary>
         public bool ApplyAfter { get; private set; }
+
+        /// <summary>是否使用在线直播模式（不下载）。</summary>
+        public bool IsOnline { get; private set; }
+
+        /// <summary>在线模式下的媒体直链 URL。</summary>
+        public string? OnlineUrl { get; private set; }
+
+        /// <summary>在线模式下的壁纸类型（图片/视频）。</summary>
+        public WallpaperType OnlineType { get; private set; }
 
         // 下载的壁纸保存到程序根目录 Wallpapers 子目录，不写入系统用户目录（C 盘）。
         private static readonly string SaveDir = Path.Combine(AppPaths.RootDirectory, "Wallpapers");
@@ -28,6 +38,14 @@ namespace DynamicWallpaper.UI
             ".mp4", ".webm", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".mpg", ".mpeg", ".flv", ".ts",
             ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".html", ".htm"
         };
+
+        private static readonly HashSet<string> VideoExtensions = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ".mp4", ".webm", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".mpg", ".mpeg", ".flv", ".ts"
+        };
+
+        private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+        { ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp" };
 
         private static readonly Dictionary<string, string> ContentTypeExt = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -48,6 +66,15 @@ namespace DynamicWallpaper.UI
         public AddLinkDialog()
         {
             InitializeComponent();
+            ProgressBarBorder.Visibility = Visibility.Collapsed;
+            this.KeyDown += (s, e) =>
+            {
+                if (e.Key == System.Windows.Input.Key.Escape)
+                {
+                    DialogResult = false;
+                    Close();
+                }
+            };
         }
 
         protected override void OnSourceInitialized(EventArgs e)
@@ -62,21 +89,86 @@ namespace DynamicWallpaper.UI
             catch { /* DWM 属性不支持的旧系统上静默忽略 */ }
         }
 
+        private void Window_Loaded(object sender, RoutedEventArgs e)
+        {
+            UrlBox.Focus();
+            UpdateButtonText();
+        }
+
+        private void TitleBar_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (e.ChangedButton == System.Windows.Input.MouseButton.Left)
+                DragMove();
+        }
+
+        private void Close_Click(object sender, RoutedEventArgs e)
+        {
+            DialogResult = false;
+            Close();
+        }
+
+        private void Cancel_Click(object sender, RoutedEventArgs e)
+        {
+            DialogResult = false;
+            Close();
+        }
+
+        private void OnlineChk_Changed(object sender, RoutedEventArgs e)
+        {
+            UpdateButtonText();
+        }
+
+        private void UpdateButtonText()
+        {
+            // XAML 加载 OnlineChk 时会立即触发 Checked 事件，此时 DownloadBtn 可能尚未初始化，必须做空引用保护。
+            if (DownloadBtn == null || OnlineChk == null) return;
+            DownloadBtn.Content = OnlineChk.IsChecked == true ? "添加" : "下载并添加";
+        }
+
+        private static string CleanPathForExt(string url)
+        {
+            try { return new Uri(url).AbsolutePath; }
+            catch { return url; }
+        }
+
         private async void Download_Click(object sender, RoutedEventArgs e)
         {
-            var url = UrlBox.Text.Trim();
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            var text = UrlBox.Text.Trim();
+            if (!Uri.TryCreate(text, UriKind.Absolute, out var uri) ||
                 (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
             {
                 MessageBox.Show("请输入有效的 http/https 链接。\n\n注意：必须是【媒体直链】（通常以 .mp4 / .webm / .jpg 等结尾），不是网页地址。", "链接无效", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
+            // 在线直播模式：不下载，直接根据扩展名识别类型并返回
+            if (OnlineChk.IsChecked == true)
+            {
+                var extension = Path.GetExtension(CleanPathForExt(text));
+                var isImage = ImageExtensions.Contains(extension);
+                if (!isImage && !VideoExtensions.Contains(extension))
+                {
+                    // 扩展名无法识别时默认按视频流播尝试
+                    Logger.Log($"在线直播：扩展名未识别（{extension}），按视频流播尝试：{text}");
+                }
+                OnlineType = isImage ? WallpaperType.Image : WallpaperType.Video;
+                OnlineUrl = text;
+                IsOnline = true;
+                ApplyAfter = ApplyChk.IsChecked == true;
+                StatusText.Text = "已添加在线直播源";
+                Logger.Log($"在线直播源已添加：{text}（{OnlineType}）");
+                DialogResult = true;
+                Close();
+                return;
+            }
+
+            // 下载模式
             DownloadBtn.IsEnabled = false;
             CancelBtn.IsEnabled = false;
             ProgressBar.Value = 0;
+            ProgressBarBorder.Visibility = Visibility.Visible;
             StatusText.Text = "正在连接…";
-            Logger.Log($"下载开始：{url}");
+            Logger.Log($"下载开始：{text}");
 
             try
             {
@@ -135,6 +227,7 @@ namespace DynamicWallpaper.UI
 
                 DownloadedPath = dest;
                 ApplyAfter = ApplyChk.IsChecked == true;
+                ProgressBarBorder.Visibility = Visibility.Collapsed;
                 StatusText.Text = "完成";
                 Logger.Log($"下载成功：{dest}");
                 DialogResult = true;
@@ -143,6 +236,7 @@ namespace DynamicWallpaper.UI
             catch (Exception ex)
             {
                 Logger.Log("下载失败", ex);
+                ProgressBarBorder.Visibility = Visibility.Collapsed;
                 StatusText.Text = "失败：" + ex.Message;
                 MessageBox.Show("下载失败：" + ex.Message + "\n\n（详细日志已记录到 app.log，可发给我排查）", "下载失败", MessageBoxButton.OK, MessageBoxImage.Error);
                 DownloadBtn.IsEnabled = true;
@@ -169,12 +263,6 @@ namespace DynamicWallpaper.UI
         {
             foreach (var c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
             return name.Length > 200 ? name[..200] : name;
-        }
-
-        private void Cancel_Click(object sender, RoutedEventArgs e)
-        {
-            DialogResult = false;
-            Close();
         }
     }
 }
