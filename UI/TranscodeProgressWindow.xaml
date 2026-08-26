@@ -4,8 +4,7 @@
         Title="正在转码" Height="170" Width="440"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         Background="#1B1B22" Foreground="White"
-        ShowInTaskbar="False" Topmost="True" WindowStyle="ToolWindow"
-        SourceInitialized="OnSourceInitialized">
+        ShowInTaskbar="False" Topmost="True" WindowStyle="ToolWindow">
     <StackPanel Margin="20,16">
         <TextBlock x:Name="FileText" FontSize="13" Foreground="#D8D8E0" TextTrimming="CharacterEllipsis" Margin="0,0,0,14"/>
         <ProgressBar x:Name="Progress" Height="8" Minimum="0" Maximum="100" Background="#2A2A33" Foreground="#4C8DFF"/>
