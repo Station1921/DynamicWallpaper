@@ -25,3 +25,11 @@ Thumbs.db
 Desktop.ini
 *.tmp
 .DS_Store
+
+# Runtime user data & large binaries (not source)
+ffmpeg.exe
+config.json
+Wallpapers/
+WebView2/
+hovercache/
+temp/
