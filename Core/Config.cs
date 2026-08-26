@@ -66,25 +66,67 @@ namespace DynamicWallpaper.Core
             try
             {
                 using var key = Registry.CurrentUser.OpenSubKey(RunKey, true);
-                if (key == null) return;
-                var exe = Process.GetCurrentProcess().MainModule?.FileName;
+                if (key == null)
+                {
+                    Logger.Log("[Config] 开机自启：无法打开注册表 Run 键");
+                    return;
+                }
+
+                // 单文件发布时 Environment.ProcessPath 是 exe 真实路径；用它作为首选，失败再回落 MainModule。
+                var exe = Environment.ProcessPath;
+                if (string.IsNullOrWhiteSpace(exe))
+                    exe = Process.GetCurrentProcess().MainModule?.FileName;
+
                 if (RunOnStartup)
                 {
+                    if (string.IsNullOrWhiteSpace(exe))
+                    {
+                        Logger.Log("[Config] 开机自启：无法获取当前 exe 路径，未写入注册表");
+                        return;
+                    }
+
                     // 开机自启项追加 --silent 参数：程序以静默方式启动（仅驻留托盘、不弹出主界面），
                     // 但仍会构造 MainWindow 以恢复已保存的每屏壁纸。
-                    if (!string.IsNullOrEmpty(exe))
+                    var expected = $"\"{exe}\" --silent";
+                    var current = key.GetValue(AppName) as string;
+                    if (current != expected)
                     {
-                        var expected = $"\"{exe}\" --silent";
-                        var current = key.GetValue(AppName) as string;
-                        if (current != expected) key.SetValue(AppName, expected);
+                        key.SetValue(AppName, expected, RegistryValueKind.String);
+                        Logger.Log($"[Config] 开机自启已写入：{expected}");
+                    }
+                    else
+                    {
+                        Logger.Log("[Config] 开机自启：注册表项已是最新");
                     }
                 }
                 else
                 {
                     key.DeleteValue(AppName, false);
+                    Logger.Log("[Config] 开机自启已关闭：注册表项已删除");
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Logger.Log($"[Config] 开机自启注册表操作失败：{ex.Message}");
+            }
+        }
+
+        /// <summary>检查注册表中是否已存在当前 exe 的开机自启项。</summary>
+        public bool IsStartupRegistered()
+        {
+            try
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(RunKey, false);
+                if (key == null) return false;
+                var value = key.GetValue(AppName) as string;
+                if (string.IsNullOrWhiteSpace(value)) return false;
+                var exe = Environment.ProcessPath ?? Process.GetCurrentProcess().MainModule?.FileName;
+                return value.StartsWith($"\"{exe}\"", StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         /// <summary>
