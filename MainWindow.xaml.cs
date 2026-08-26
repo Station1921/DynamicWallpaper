@@ -571,19 +571,24 @@ namespace DynamicWallpaper
                 miAll.Click += async (_, _) => await ApplyItemAsync(item, -1);
                 setMenu.Items.Add(miAll);
             }
-            var openLocation = new MenuItem { Header = "打开壁纸位置" };
-            openLocation.Click += (_, _) => OpenWallpaperLocation(item);
-
             var remove = new MenuItem { Header = "从库移除" };
             remove.Click += (_, _) => RemoveItem(item);
 
-            var deleteLocal = new MenuItem { Header = "从本地删除壁纸" };
-            deleteLocal.Click += (_, _) => DeleteWallpaperLocal(item);
-
             menu.Items.Add(setMenu);
-            menu.Items.Add(openLocation);
+            // 网络壁纸（URL）没有本地文件，不提供"打开位置"和"本地删除"
+            if (!IsWebUrl(item.Path))
+            {
+                var openLocation = new MenuItem { Header = "打开壁纸位置" };
+                openLocation.Click += (_, _) => OpenWallpaperLocation(item);
+                menu.Items.Add(openLocation);
+            }
             menu.Items.Add(remove);
-            menu.Items.Add(deleteLocal);
+            if (!IsWebUrl(item.Path))
+            {
+                var deleteLocal = new MenuItem { Header = "从本地删除壁纸" };
+                deleteLocal.Click += (_, _) => DeleteWallpaperLocal(item);
+                menu.Items.Add(deleteLocal);
+            }
             menu.IsOpen = true;
             e.Handled = true;
         }
@@ -607,7 +612,17 @@ namespace DynamicWallpaper
         /// <summary>用资源管理器打开壁纸文件所在文件夹并选中该文件。</summary>
         private void OpenWallpaperLocation(WallpaperItem item)
         {
-            if (string.IsNullOrEmpty(item.Path) || !File.Exists(item.Path))
+            if (string.IsNullOrEmpty(item.Path))
+            {
+                MessageBox.Show("壁纸路径为空。", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            if (IsWebUrl(item.Path))
+            {
+                MessageBox.Show("网络壁纸没有本地文件位置。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            if (!File.Exists(item.Path))
             {
                 MessageBox.Show("壁纸文件不存在：\n" + item.Path, "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
@@ -632,6 +647,11 @@ namespace DynamicWallpaper
         /// 文件删除失败（如被占用）时提示且不移除卡片。</summary>
         private void DeleteWallpaperLocal(WallpaperItem item)
         {
+            if (string.IsNullOrEmpty(item.Path) || IsWebUrl(item.Path))
+            {
+                MessageBox.Show("网络壁纸无法从本地删除。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
             try
             {
                 File.Delete(item.Path);
