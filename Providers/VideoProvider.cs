@@ -200,7 +200,8 @@ namespace DynamicWallpaper.Providers
             try
             {
                 var dir = Path.GetDirectoryName(path);
-                if (!string.IsNullOrEmpty(dir))
+                var isUrl = IsRemoteUrl(path);
+                if (!string.IsNullOrEmpty(dir) && !isUrl)
                     await RunOnUiThreadAsync(() =>
                     {
                         // 图片模式与视频模式统一使用 dwallpaper.local：108 轮实测该主机名
@@ -209,7 +210,7 @@ namespace DynamicWallpaper.Providers
                         ctrl.CoreWebView2.SetVirtualHostNameToFolderMapping("dwallpaper.local", dir, CoreWebView2HostResourceAccessKind.Allow);
                         return Task.FromResult("");
                     });
-                var src = $"http://dwallpaper.local/{Uri.EscapeDataString(Path.GetFileName(path))}";
+                var src = JsEscape(BuildMediaSrc(path));
                 var css = BuildVideoFitCss();
                 // 图片加载完成后的背景（fit 需黑边；fill 无影响；center 透明）
                 var bgOnLoad = FitMode == "center" ? "transparent" : "#000";
@@ -370,6 +371,31 @@ namespace DynamicWallpaper.Providers
             return ext is ".jpg" or ".jpeg" or ".png" or ".bmp" or ".gif" or ".webp";
         }
 
+        /// <summary>判断路径是否为远程 http/https URL。</summary>
+        private static bool IsRemoteUrl(string path)
+        {
+            return Uri.TryCreate(path, UriKind.Absolute, out var u) &&
+                   (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps);
+        }
+
+        /// <summary>生成 HTML/JS 中使用的媒体源地址。本地文件走 dwallpaper.local 虚拟主机，远程 URL 直接使用原链接。</summary>
+        private static string BuildMediaSrc(string path)
+        {
+            if (IsRemoteUrl(path)) return path;
+            return $"http://dwallpaper.local/{Uri.EscapeDataString(Path.GetFileName(path))}";
+        }
+
+        private static string HtmlEscape(string s)
+        {
+            return s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;")
+                    .Replace("\"", "&quot;").Replace("'", "&#39;");
+        }
+
+        private static string JsEscape(string s)
+        {
+            return s.Replace("\\", "\\\\").Replace("'", "\\'").Replace("\n", "\\n").Replace("\r", "\\r");
+        }
+
         /// <summary>把 WebView2 COM 调用调度回 Controller 创建线程（UI 线程）执行。
         /// WebView2 COM 接口绑定创建线程，跨线程 QueryInterface 会抛
         /// "Unable to cast COM object ... ICoreWebView2Controller"；已在 UI 线程时直接执行。</summary>
@@ -450,11 +476,14 @@ namespace DynamicWallpaper.Providers
                 ctrl.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
                 ctrl.CoreWebView2.Settings.IsStatusBarEnabled = false;
 
-                // 虚拟主机映射：HTML 页面通过 http://dwallpaper.local/ 加载本地视频/图片（不受 CORS 限制）。
-                // 图片与视频统一使用同一主机名（108 轮实测均可正常加载）。
+                // 虚拟主机映射：本地文件通过 http://dwallpaper.local/ 加载（不受 CORS 限制）；
+                // 远程 URL 直接使用原链接流播，不做文件夹映射。
+                var isUrl = IsRemoteUrl(path);
                 string? dir = Path.GetDirectoryName(path);
-                if (!string.IsNullOrEmpty(dir))
+                if (!string.IsNullOrEmpty(dir) && !isUrl)
                     ctrl.CoreWebView2.SetVirtualHostNameToFolderMapping("dwallpaper.local", dir, CoreWebView2HostResourceAccessKind.Allow);
+
+                var mediaSrc = HtmlEscape(BuildMediaSrc(path));
 
                 // video 始终带 muted 启动（保证 autoplay 必成功），再通过内嵌 script 在
                 // loadedmetadata 时按 _muted 应用真实静音状态——非静音时取消静音继续播放。
@@ -463,16 +492,16 @@ namespace DynamicWallpaper.Providers
                 string html;
                 if (_isImage)
                 {
-                    // 静态图片模式：虚拟主机映射本地图片（绕开 data URI 2MB 上限），加载即渲染。
+                    // 静态图片模式：本地文件走虚拟主机，远程 URL 直接加载。
                     // 窗口背景透明，图片加载完成前露出下层（旧动态层），就绪后无缝直切。
-                    html = $"<html><head><style>html,body{{margin:0;padding:0;overflow:hidden}}img{{position:fixed;inset:0;width:100vw;height:100vh;{BuildVideoFitCss()}}}</style></head><body><img id='i' src='http://dwallpaper.local/{Uri.EscapeDataString(Path.GetFileName(path))}'></body></html>";
+                    html = $"<html><head><style>html,body{{margin:0;padding:0;overflow:hidden}}img{{position:fixed;inset:0;width:100vw;height:100vh;{BuildVideoFitCss()}}}</style></head><body><img id='i' src='{mediaSrc}'></body></html>";
                 }
                 else
                 {
                     string mutedJs = _muted ? "true" : "false";
                     // 注意：不注册 canplay 自动 play——Pause() 暂停后若触发 canplay 事件会被误恢复播放
                     // （全屏暂停失效的隐患之一）；播放由 autoplay + loadedmetadata 保证。
-                    html = $"<html><head><style>html,body{{margin:0;padding:0;overflow:hidden}}video{{position:fixed;inset:0;width:100vw;height:100vh;{BuildVideoFitCss()}}}</style></head><body><video id='v' src='http://dwallpaper.local/{Uri.EscapeDataString(Path.GetFileName(path))}' autoplay muted loop playsinline></video><script>var v=document.getElementById('v');v.addEventListener('loadedmetadata',function(){{v.muted={mutedJs};v.volume={(_muted ? 0 : 1)};v.play();}});</script></body></html>";
+                    html = $"<html><head><style>html,body{{margin:0;padding:0;overflow:hidden}}video{{position:fixed;inset:0;width:100vw;height:100vh;{BuildVideoFitCss()}}}</style></head><body><video id='v' src='{mediaSrc}' autoplay muted loop playsinline></video><script>var v=document.getElementById('v');v.addEventListener('loadedmetadata',function(){{v.muted={mutedJs};v.volume={(_muted ? 0 : 1)};v.play();}});</script></body></html>";
                 }
 
                 // 导航完成信号：ExecuteScriptAsync 需在导航完成后调用（此前会抛 COM 异常），
