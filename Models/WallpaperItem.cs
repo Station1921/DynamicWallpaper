@@ -33,6 +33,11 @@ namespace DynamicWallpaper.Models
             _ => "动态"
         };
 
+        /// <summary>是否为网络直链（URL 在线壁纸）。</summary>
+        public bool IsOnlineUrl =>
+            Uri.TryCreate(Path, UriKind.Absolute, out var u) &&
+            (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps);
+
         private bool _isActive;
         public bool IsActive
         {
@@ -65,6 +70,10 @@ namespace DynamicWallpaper.Models
         private async Task LoadThumbnailAsync()
         {
             if (Type == WallpaperType.Web) return;
+            // 远程 URL 不加载本地缩略图，避免文件不存在导致异常
+            if (Uri.TryCreate(Path, UriKind.Absolute, out var u) &&
+                (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps))
+                return;
             var bmp = await ThumbnailHelper.GetThumbnailAsync(Path, Type);
             if (bmp != null) Thumbnail = bmp;
         }
