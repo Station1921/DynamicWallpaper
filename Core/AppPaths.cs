@@ -1,10 +1,6 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
-using System.Linq;
-using System.Threading.Tasks;
 
 namespace DynamicWallpaper.Core
 {
@@ -78,15 +74,7 @@ namespace DynamicWallpaper.Core
                 return _cachedFfmpeg = found;
             }
 
-            // 3) 全盘扫描所有逻辑盘符 → 找到直接调用，不释放（覆盖用户自装软件目录）
-            string? foundAll = FindFfmpegOnAllDrives();
-            if (foundAll != null)
-            {
-                Logger.Log("[AppPaths] 使用全盘扫描 ffmpeg: " + foundAll);
-                return _cachedFfmpeg = foundAll;
-            }
-
-            // 4) 都没有 → 才解压内嵌资源兜底
+            // 3) 都没有 → 才解压内嵌资源兜底
             try
             {
                 using var stream = System.Reflection.Assembly.GetExecutingAssembly()
@@ -192,97 +180,6 @@ namespace DynamicWallpaper.Core
             }
 
             return candidates.Count > 0 ? candidates[0] : null;
-        }
-
-        /// <summary>全盘扫描所有逻辑盘符，递归枚举 ffmpeg.exe，并预检编码器能力。
-        /// 并行枚举各盘符以缩短耗时；仅当 PATH/常见位置均未命中时才调用，结果会话级缓存。
-        /// 未就绪/无权限/异常盘符自动跳过。全部无果返回 null。</summary>
-        private static string? FindFfmpegOnAllDrives()
-        {
-            var candidates = new ConcurrentBag<string>();
-            var drives = DriveInfo.GetDrives()
-                .Where(d => d.IsReady && (d.DriveType == DriveType.Fixed || d.DriveType == DriveType.Removable))
-                .Select(d => d.RootDirectory.FullName)
-                .ToArray();
-            if (drives.Length == 0) return null;
-
-            Parallel.ForEach(drives, drive =>
-            {
-                try
-                {
-                    foreach (var p in SafeEnumerateFfmpeg(drive))
-                    {
-                        candidates.Add(p);
-                    }
-                }
-                catch
-                {
-                    // 整盘级异常：跳过该盘继续
-                }
-            });
-
-            // 预检编码器：优先选择含 libx264 + hevc 的完整版。
-            // 剪映等精简版 ffmpeg 缺 libx264 会导致转码失败后被迫回退内嵌解压，故必须过滤。
-            foreach (var c in candidates)
-            {
-                if (HasRequiredCodecs(c)) return c;
-            }
-            return null;
-        }
-
-        /// <summary>运行 ffmpeg -encoders -decoders 检查是否含 libx264 编码器与 hevc 解码器。
-        /// 启动失败/超时/无权限视为不可用，返回 false。</summary>
-        private static bool HasRequiredCodecs(string ffmpegPath)
-        {
-            try
-            {
-                var psi = new ProcessStartInfo(ffmpegPath, "-hide_banner -encoders -decoders")
-                {
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
-                using var proc = Process.Start(psi);
-                if (proc == null) return false;
-                string output = proc.StandardOutput.ReadToEnd() + proc.StandardError.ReadToEnd();
-                if (!proc.WaitForExit(3000))
-                {
-                    try { proc.Kill(); } catch { /* ignore */ }
-                    return false;
-                }
-                return output.Contains("libx264", StringComparison.OrdinalIgnoreCase)
-                    && output.Contains("hevc", StringComparison.OrdinalIgnoreCase);
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        /// <summary>自根目录深度优先遍历，逐目录容错：无权限/超长路径等异常目录跳过，不中断整盘扫描。</summary>
-        private static IEnumerable<string> SafeEnumerateFfmpeg(string root)
-        {
-            var stack = new Stack<string>();
-            stack.Push(root);
-            while (stack.Count > 0)
-            {
-                var dir = stack.Pop();
-                foreach (var f in GetFilesSafe(dir)) yield return f;
-                foreach (var sub in GetDirsSafe(dir)) stack.Push(sub);
-            }
-        }
-
-        private static string[] GetFilesSafe(string dir)
-        {
-            try { return Directory.GetFiles(dir, "ffmpeg.exe", SearchOption.TopDirectoryOnly); }
-            catch { return Array.Empty<string>(); }
-        }
-
-        private static string[] GetDirsSafe(string dir)
-        {
-            try { return Directory.GetDirectories(dir); }
-            catch { return Array.Empty<string>(); }
         }
 
         private static void AddIfExists(List<string> list, string path)
