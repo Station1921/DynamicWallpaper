@@ -108,7 +108,9 @@ namespace DynamicWallpaper.Core
             {
                 foreach (var a in _config.Assignments)
                 {
-                    if (_states.ContainsKey(a.Index) && File.Exists(a.Path))
+                    // 远程 URL（http/https）没有本地文件，File.Exists 会误判不存在而跳过，
+                    // 因此加 IsRemoteUrl 判定，保证在线壁纸也能在启动时自动恢复。
+                    if (_states.ContainsKey(a.Index) && (IsRemoteUrl(a.Path) || File.Exists(a.Path)))
                         _ = SetWallpaperAsync(a.Path, a.Type, a.Index, save: false);
                 }
                 _config.Save();
@@ -561,14 +563,20 @@ namespace DynamicWallpaper.Core
             }
         }
 
-        public async Task StopAsync(bool restoreWallpaper = true)
+        /// <summary>
+        /// 停止所有屏壁纸。restoreWallpaper=true 时把系统壁纸刷回原静态图（退出/解除时桌面不会黑屏）。
+        /// persistState=true（默认）时把“当前运行态”回写到配置；退出程序时应传 false：
+        /// 此时 CleanupScreenAsync 已把各屏 LastPath 清空，若再 Persist 会把用户已设置的壁纸分配覆盖成空，
+        /// 导致下次启动无法自动恢复。用户主动“解除壁纸”走 ClearScreenAsync，自会更新配置。
+        /// </summary>
+        public async Task StopAsync(bool restoreWallpaper = true, bool persistState = true)
         {
             await _screenOpLock.WaitAsync();
             try
             {
                 var tasks = _states.Values.Select(st => CleanupScreenAsync(st, restoreWallpaper)).ToArray();
                 await Task.WhenAll(tasks);
-                PersistAssignments();
+                if (persistState) PersistAssignments();
             }
             finally
             {
