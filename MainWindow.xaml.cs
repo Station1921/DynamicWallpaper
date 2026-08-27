@@ -105,6 +105,11 @@ namespace DynamicWallpaper
             if (_config.RunOnStartup) _config.EnsureStartupRegistered();
             _manager = new WallpaperManager(_config);
             _downloadHistory = DownloadHistory.Load();
+            _manager.StateChanged += () => Dispatcher.InvokeAsync(() =>
+            {
+                RefreshActiveBadges();
+                SetStatusText(StatusSummary());
+            });
             _manager.Start();
 
             foreach (var p in _config.Library)
