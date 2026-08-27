@@ -1318,7 +1318,10 @@ namespace DynamicWallpaper
             {
                 // restoreWallpaper=true：退出时必须把系统壁纸刷回原始静态图，
                 // 否则 WorkerW 子窗口销毁后只会露出桌面背景（灰底/黑屏），不会自动恢复原壁纸。
-                await _manager.StopAsync(restoreWallpaper: true);
+                // persistState:false —— 退出时只清理桌面渲染、不把“已停止”状态回写配置，
+                // 保留用户已设置的壁纸分配，使下次启动（含开机自启）能自动恢复壁纸。
+                // 仅当用户主动“解除壁纸”时才通过 ClearScreenAsync 更新配置。
+                await _manager.StopAsync(restoreWallpaper: true, persistState: false);
             }
             catch (Exception ex)
             {
