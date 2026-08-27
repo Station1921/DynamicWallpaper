@@ -73,11 +73,16 @@ namespace DynamicWallpaper.Core
         public int ScreenCount => _states.Count;
         public bool WebAvailable => WebProviderLoader.Available;
 
+        /// <summary>任意屏幕壁纸设置/清除/停止完成后触发，供 UI 同步按钮状态。</summary>
+        public event Action? StateChanged;
+
         public IReadOnlyList<int> ActiveScreenIndices =>
             _states.Values.Where(s => s.Provider != null || s.IsStaticImage).Select(s => s.Index).ToList();
 
         public string? GetActivePath(int index) =>
             _states.TryGetValue(index, out var s) && (s.Provider != null || s.IsStaticImage) ? s.LastPath : null;
+
+        private void RaiseStateChanged() => StateChanged?.Invoke();
 
         private void BuildScreens()
         {
@@ -492,6 +497,7 @@ namespace DynamicWallpaper.Core
             finally
             {
                 _screenOpLock.Release();
+                RaiseStateChanged();
             }
         }
 
@@ -560,6 +566,7 @@ namespace DynamicWallpaper.Core
             finally
             {
                 _screenOpLock.Release();
+                RaiseStateChanged();
             }
         }
 
@@ -581,6 +588,7 @@ namespace DynamicWallpaper.Core
             finally
             {
                 _screenOpLock.Release();
+                RaiseStateChanged();
             }
         }
 
