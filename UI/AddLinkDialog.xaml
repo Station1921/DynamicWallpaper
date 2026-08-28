@@ -114,7 +114,7 @@
                 <TextBlock Grid.Row="0" Foreground="#C8C8D2" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,12">
                     <Run Text="粘贴【媒体直链】（视频/图片，通常以 .mp4 / .webm / .jpg 等结尾，不是网页地址）。"/>
                     <LineBreak/>
-                    <Run Text="勾选「在线直播」则直接流播、不下载（适合 .mp4/.webm 等直链，断网/限速会卡顿，m3u8 等流媒体暂不支持）；"/>
+                    <Run Text="勾选「在线直播」则直接流播、不下载（.mp4/.webm 等直链直接播放；.m3u8 流媒体自动用 hls.js 流播；断网/限速会卡顿）；"/>
                     <LineBreak/>
                     <Run Text="取消勾选则下载到本地。若站点用 JS 加载视频，请用浏览器 F12 → 网络 → 筛选 Media 复制真正的 .mp4 直链。"/>
                 </TextBlock>
