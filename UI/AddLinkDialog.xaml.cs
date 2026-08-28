@@ -146,12 +146,14 @@ namespace DynamicWallpaper.UI
             {
                 var extension = Path.GetExtension(CleanPathForExt(text));
                 var isImage = ImageExtensions.Contains(extension);
-                if (!isImage && !VideoExtensions.Contains(extension))
+                var isM3u8 = extension.Equals(".m3u8", StringComparison.OrdinalIgnoreCase);
+                if (!isImage && !VideoExtensions.Contains(extension) && !isM3u8)
                 {
                     // 扩展名无法识别时默认按视频流播尝试
                     Logger.Log($"在线直播：扩展名未识别（{extension}），按视频流播尝试：{text}");
                 }
-                OnlineType = isImage ? WallpaperType.Image : WallpaperType.Video;
+                // m3u8 走 Web 类型，由 WebProvider 用内嵌 hls.js 流式播放；其余按图片/视频处理
+                OnlineType = isImage ? WallpaperType.Image : (isM3u8 ? WallpaperType.Web : WallpaperType.Video);
                 OnlineUrl = text;
                 IsOnline = true;
                 ApplyAfter = ApplyChk.IsChecked == true;
