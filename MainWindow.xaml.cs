@@ -77,7 +77,7 @@ namespace DynamicWallpaper
         }
 
         private const string Filter =
-            "媒体文件|*.mp4;*.webm;*.mkv;*.avi;*.mov;*.wmv;*.m4v;*.mpg;*.mpeg;*.flv;*.ts;*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.webp|视频|*.mp4;*.webm;*.mkv;*.avi;*.mov;*.wmv;*.m4v;*.mpg;*.mpeg;*.flv;*.ts|图片|*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.webp|所有文件|*.*";
+            "媒体文件|*.mp4;*.webm;*.mkv;*.avi;*.mov;*.wmv;*.m4v;*.mpg;*.mpeg;*.flv;*.ts;*.m3u8;*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.webp|视频|*.mp4;*.webm;*.mkv;*.avi;*.mov;*.wmv;*.m4v;*.mpg;*.mpeg;*.flv;*.ts;*.m3u8|图片|*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.webp|所有文件|*.*";
 
         public MainWindow()
         {
@@ -239,6 +239,15 @@ namespace DynamicWallpaper
         /// <summary>本次会话已弹出过 HEVC 转码询问的原文件路径，避免重复弹窗。</summary>
         private readonly HashSet<string> _hevcPrompted = new(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>转码结果：成功 / 失败（需提示用户）/ 被用户或软件关闭取消（不提示、删除半成品）。</summary>
+        private enum TranscodeOutcome { Success, Failed, Cancelled }
+
+        /// <summary>安全关闭转码进度窗（已关闭则忽略）。正常成功/失败结束时调用，半成品删除由窗口 OnClosing 负责。</summary>
+        private static void SafeClose(UI.TranscodeProgressWindow? w)
+        {
+            try { if (w != null && w.IsLoaded) w.Close(); } catch { }
+        }
+
         /// <summary>添加壁纸到库。MP4 视频在添加前先检测 HEVC 编码（方案 A）：
         /// 检测到 HEVC 时弹窗询问是否用程序目录下的 ffmpeg.exe 转码为 H.264，避免部分系统/显卡
         /// 无法解码导致壁纸黑屏；原文件始终保留，转码产物为同目录 "原名_h264.mp4"。</summary>
@@ -262,9 +271,15 @@ namespace DynamicWallpaper
         /// 不转码或转码失败时原样返回；转码成功返回转码产物路径。</summary>
         private async Task<string> PrepareVideoAsync(string path)
         {
+            // 本地 m3u8 / ts：Chromium 不原生支持 HLS / MPEG-TS，统一转码为 mp4（路线 B）。
+            // 远程 m3u8 不走此路（由 WebProvider + hls.js 流式播放，路线 A）。
+            if (path.EndsWith(".ts", StringComparison.OrdinalIgnoreCase)
+                || path.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase))
+                return await PrepareStreamAsync(path);
+
             if (!path.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)) return path;
 
-            string? codec = VideoCodecDetector.DetectVideoCodec(path);
+            string? codec = await VideoCodecDetector.DetectVideoCodecAsync(path);
             if (!VideoCodecDetector.IsHevc(codec)) return path;
 
             string outPath = Path.Combine(
@@ -284,11 +299,31 @@ namespace DynamicWallpaper
                 "HEVC 转码", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
             if (choice != MessageBoxResult.Yes) return string.Empty;
 
+            // 点击确定后立即显示转码进度窗（准备中）：ffmpeg 查找/预检可能耗时数秒，先给用户明确反馈，
+            // 真正的转码开始后由 RunTranscodeOnceAsync 切换为实时进度。
+            TranscodeProgressWindow? progressWin = null;
+            try
+            {
+                progressWin = new TranscodeProgressWindow(Path.GetFileName(path));
+                progressWin.OutputPath = outPath;
+                progressWin.Show();
+                progressWin.SetIndeterminate("准备中…");
+            }
+            catch { progressWin = null; }
+
             // ffmpeg 查找：程序目录 → PATH/常见位置 → 内嵌解压兜底（详见 AppPaths.EnsureFfmpeg）。
             // 平时浏览库/设壁纸完全不触发此查找，零开销；仅此处（HEVC 转码）才查一次。
-            string? ffmpeg = AppPaths.EnsureFfmpeg();
+            // 放到线程池执行：预检需启动 ffmpeg 进程探测编码器（最长 3 秒），避免阻塞 UI 线程。
+            string? ffmpeg = await Task.Run(() => AppPaths.EnsureFfmpeg());
+            // 用户在"准备中"阶段就关闭了窗口（含软件整体退出）：直接放弃，不弹任何提示。
+            if (progressWin != null && progressWin.Token.IsCancellationRequested)
+            {
+                SafeClose(progressWin);
+                return string.Empty;
+            }
             if (string.IsNullOrEmpty(ffmpeg))
             {
+                SafeClose(progressWin);
                 MessageBox.Show("未找到 ffmpeg.exe，且内置 ffmpeg 解压失败。该视频未添加。",
                     "缺少 ffmpeg", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return string.Empty;
@@ -301,37 +336,159 @@ namespace DynamicWallpaper
 
             for (int attempt = 1; attempt <= 2; attempt++)
             {
-                if (await RunTranscodeOnceAsync(ffmpeg, path, outPath))
+                var outcome = await RunTranscodeOnceAsync(ffmpeg, path, outPath, progressWin);
+                if (outcome == TranscodeOutcome.Success)
                 {
                     Logger.Log($"[HEVC转码] 完成: {path} -> {outPath}");
-                    MessageBox.Show($"转码完成：{Path.GetFileName(outPath)}\n已按转码文件添加。",
-                        "转码成功", MessageBoxButton.OK, MessageBoxImage.Information);
+                    // 成功后直接返回产物路径，由 AddPathAsync 自动加入库，不再弹窗。
                     return outPath;
+                }
+                // 用户关闭窗口/软件退出导致取消：不提示失败，直接返回空（半成品已由窗口删除）。
+                if (outcome == TranscodeOutcome.Cancelled)
+                {
+                    SafeClose(progressWin);
+                    return string.Empty;
                 }
 
                 Logger.Log($"[HEVC转码] 第{attempt}次失败，ffmpeg={ffmpeg}");
                 // 第一次失败且用的是外部 ffmpeg → 回退内嵌解压兜底并重试一次
                 if (attempt == 1 && usedExternal)
                 {
-                    string? embedded = AppPaths.ForceEmbeddedFfmpeg();
+                    string? embedded = await Task.Run(() => AppPaths.ForceEmbeddedFfmpeg());
                     if (!string.IsNullOrEmpty(embedded))
                     {
                         ffmpeg = embedded;
                         usedExternal = false;
+                        progressWin = null; // 窗口已在失败时关闭，重试时由方法内部新建
                         continue;
                     }
                 }
                 break;
             }
 
+            SafeClose(progressWin);
             MessageBox.Show("转码失败，未添加该视频。", "转码失败", MessageBoxButton.OK, MessageBoxImage.Warning);
             return string.Empty;
         }
 
-        /// <summary>单次 HEVC 转码（libx264）。成功返回 true；启动失败/进程退出码非 0/产物缺失返回 false。</summary>
-        private async Task<bool> RunTranscodeOnceAsync(string ffmpeg, string path, string outPath)
+        /// <summary>本地 m3u8 / ts 转码为 mp4（路线 B）。优先 -c copy 流式封装（秒级、不重编码），
+        /// 失败（如封装格式不兼容）再回退 libx264/aac 重编码；外部 ffmpeg 失败时回退内嵌解压版重试一次。
+        /// 返回最终应加入库的路径；转码失败或无 ffmpeg 时返回空字符串（不加入库）。</summary>
+        private async Task<string> PrepareStreamAsync(string path)
         {
-            TranscodeProgressWindow? progressWin = null;
+            string outPath = Path.ChangeExtension(path, ".mp4");
+            if (File.Exists(outPath)) return outPath; // 已有转码产物则直接复用
+
+            // 放到线程池执行：预检需启动 ffmpeg 进程探测编码器，避免阻塞 UI 线程。
+            string? ffmpeg = await Task.Run(() => AppPaths.EnsureFfmpeg());
+            if (string.IsNullOrEmpty(ffmpeg))
+            {
+                MessageBox.Show("未找到 ffmpeg.exe，且内置 ffmpeg 解压失败，无法转码该流媒体文件。",
+                    "缺少 ffmpeg", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return string.Empty;
+            }
+
+            string localFfmpeg = Path.Combine(AppPaths.RootDirectory, "ffmpeg.exe");
+            bool usedExternal = !string.Equals(Path.GetFullPath(ffmpeg), Path.GetFullPath(localFfmpeg), StringComparison.OrdinalIgnoreCase);
+
+            // 1) 先尝试 -c copy 流式封装（保留原始编码，最快）
+            var outcome = await RunStreamTranscodeAsync(ffmpeg, path, outPath, copy: true);
+            if (outcome == TranscodeOutcome.Cancelled) return string.Empty;
+            bool ok = outcome == TranscodeOutcome.Success;
+            // 2) 封装失败（如 mp4 不支持该编码）则重编码为 H.264/AAC
+            if (!ok)
+            {
+                Logger.Log($"[流媒体转码] -c copy 失败，回退重编码: {path}");
+                outcome = await RunStreamTranscodeAsync(ffmpeg, path, outPath, copy: false);
+                if (outcome == TranscodeOutcome.Cancelled) return string.Empty;
+                ok = outcome == TranscodeOutcome.Success;
+            }
+            // 3) 若用的是外部 ffmpeg 且仍失败，回退内嵌解压版重试一次
+            if (!ok && usedExternal)
+            {
+                string? embedded = await Task.Run(() => AppPaths.ForceEmbeddedFfmpeg());
+                if (!string.IsNullOrEmpty(embedded))
+                {
+                    ffmpeg = embedded;
+                    outcome = await RunStreamTranscodeAsync(ffmpeg, path, outPath, copy: false);
+                    if (outcome == TranscodeOutcome.Cancelled) return string.Empty;
+                    ok = outcome == TranscodeOutcome.Success;
+                }
+            }
+
+            if (ok && File.Exists(outPath))
+            {
+                Logger.Log($"[流媒体转码] 完成: {path} -> {outPath}");
+                // 成功后直接返回产物路径，由 AddPathAsync 自动加入库，不再弹窗。
+                return outPath;
+            }
+
+            MessageBox.Show("流媒体转码失败，未添加该文件。", "转码失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return string.Empty;
+        }
+
+        /// <summary>单次流媒体转码。copy=true 时仅封装（-c copy）；否则重编码为 libx264/aac。
+        /// 返回转码结果：成功 / 失败 / 被用户或软件关闭取消（半成品由窗口 OnClosing 删除）。</summary>
+        private async Task<TranscodeOutcome> RunStreamTranscodeAsync(string ffmpeg, string path, string outPath, bool copy)
+        {
+            var args = copy
+                ? $"-y -nostats -i \"{path}\" -c copy \"{outPath}\""
+                : $"-y -nostats -i \"{path}\" -c:v libx264 -preset veryfast -c:a aac -movflags +faststart \"{outPath}\"";
+            UI.TranscodeProgressWindow? win = null;
+            try
+            {
+                var psi = new ProcessStartInfo(ffmpeg, args)
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                using var p = Process.Start(psi);
+                if (p == null) return TranscodeOutcome.Failed;
+
+                win = new UI.TranscodeProgressWindow(Path.GetFileName(path));
+                win.OutputPath = outPath;
+                win.Show();
+                win.SetIndeterminate(copy ? "正在封装为 mp4（不重编码）…" : "正在转码为 mp4…");
+                win.TranscodeProcess = p;
+
+                p.BeginOutputReadLine();
+                p.BeginErrorReadLine();
+
+                bool cancelled = false;
+                using (win.Token.Register(() => { try { if (!p.HasExited) p.Kill(); } catch { } }))
+                {
+                    try { await p.WaitForExitAsync(win.Token); }
+                    catch (OperationCanceledException) { cancelled = true; }
+                }
+                try { if (!p.HasExited) p.Kill(); } catch { }
+
+                if (cancelled)
+                {
+                    UI.TranscodeProgressWindow.CleanupPartial(outPath);
+                    return TranscodeOutcome.Cancelled;
+                }
+                bool ok = p.ExitCode == 0 && File.Exists(outPath);
+                if (!ok) { SafeClose(win); return TranscodeOutcome.Failed; }
+                win.MarkCompleted();
+                SafeClose(win);
+                return TranscodeOutcome.Success;
+            }
+            catch (Exception ex)
+            {
+                UI.TranscodeProgressWindow.CleanupPartial(outPath);
+                SafeClose(win);
+                Logger.Log($"[流媒体转码] 异常: {ex}");
+                return TranscodeOutcome.Failed;
+            }
+        }
+
+        /// <summary>单次 HEVC 转码（libx264）。progressWin 可选：外部已创建的进度窗（用于点击确定后
+        /// 立即显示"准备中"），为 null 时内部新建。返回转码结果：成功 / 失败 / 被取消。</summary>
+        private async Task<TranscodeOutcome> RunTranscodeOnceAsync(string ffmpeg, string path, string outPath, UI.TranscodeProgressWindow? progressWin = null)
+        {
+            UI.TranscodeProgressWindow? win = progressWin;
             try
             {
                 var psi = new ProcessStartInfo(ffmpeg,
@@ -343,11 +500,16 @@ namespace DynamicWallpaper
                     RedirectStandardError = true
                 };
                 using var p = Process.Start(psi);
-                if (p == null) return false;
+                if (p == null) return TranscodeOutcome.Failed;
 
-                progressWin = new TranscodeProgressWindow(Path.GetFileName(path));
-                progressWin.Show();
-                progressWin.SetIndeterminate("正在启动 ffmpeg…");
+                if (win == null)
+                {
+                    win = new UI.TranscodeProgressWindow(Path.GetFileName(path));
+                    win.Show();
+                }
+                win.OutputPath = outPath;
+                win.TranscodeProcess = p;
+                win.SetIndeterminate("正在启动 ffmpeg…");
 
                 // 从 stderr 解析输入视频总时长，从 stdout 的 -progress 输出解析实时转码位置
                 double durationSec = 0;
@@ -372,23 +534,37 @@ namespace DynamicWallpaper
                     {
                         double sec = us / 1_000_000.0;
                         double pct = Math.Min(100.0, sec / durationSec * 100.0);
-                        progressWin?.SetProgress(pct, $"{pct:F1}%  ({FormatTs(sec)} / {FormatTs(durationSec)})");
+                        win?.SetProgress(pct, $"{pct:F1}%  ({FormatTs(sec)} / {FormatTs(durationSec)})");
                     }
                 };
                 p.BeginOutputReadLine();
                 p.BeginErrorReadLine();
 
-                await p.WaitForExitAsync();
-                progressWin?.Close();
-                progressWin = null;
+                bool cancelled = false;
+                using (win.Token.Register(() => { try { if (!p.HasExited) p.Kill(); } catch { } }))
+                {
+                    try { await p.WaitForExitAsync(win.Token); }
+                    catch (OperationCanceledException) { cancelled = true; }
+                }
+                try { if (!p.HasExited) p.Kill(); } catch { }
 
-                return p.ExitCode == 0 && File.Exists(outPath);
+                if (cancelled)
+                {
+                    UI.TranscodeProgressWindow.CleanupPartial(outPath);
+                    return TranscodeOutcome.Cancelled;
+                }
+                bool ok = p.ExitCode == 0 && File.Exists(outPath);
+                if (!ok) { SafeClose(win); return TranscodeOutcome.Failed; }
+                win.MarkCompleted();
+                SafeClose(win);
+                return TranscodeOutcome.Success;
             }
             catch (Exception ex)
             {
-                progressWin?.Close();
+                UI.TranscodeProgressWindow.CleanupPartial(outPath);
+                SafeClose(win);
                 Logger.Log($"[HEVC转码] 异常: {ex}");
-                return false;
+                return TranscodeOutcome.Failed;
             }
         }
 
@@ -650,27 +826,47 @@ namespace DynamicWallpaper
 
         /// <summary>从本地删除壁纸：删除磁盘文件 + 从壁纸库移除卡片（区别于"从库移除"只删卡片不删文件）。
         /// 文件删除失败（如被占用）时提示且不移除卡片。</summary>
-        private void DeleteWallpaperLocal(WallpaperItem item)
+        private async void DeleteWallpaperLocal(WallpaperItem item)
         {
             if (string.IsNullOrEmpty(item.Path) || IsWebUrl(item.Path))
             {
                 MessageBox.Show("网络壁纸无法从本地删除。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
+
+            // 先解除壁纸播放，释放 WebView2 对视频文件的句柄；否则删除会被系统挂起数秒（等待句柄释放）甚至失败。
             try
             {
-                File.Delete(item.Path);
+                foreach (var idx in _manager.ActiveScreenIndices)
+                    if (_manager.GetActivePath(idx) == item.Path)
+                        await _manager.ClearScreenAsync(idx);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[MainWindow] 删除前解除壁纸失败: {ex}");
+            }
+
+            // 移出库并刷新界面，立即响应（与 RemoveItem 的库清理逻辑保持一致）
+            Library.Remove(item);
+            if (_config.Library.Contains(item.Path)) _config.Library.Remove(item.Path);
+            _config.Assignments.RemoveAll(a => a.Path == item.Path);
+            _config.Save();
+            RefreshEmpty();
+            RefreshActiveBadges();
+            SetStatusText(StatusSummary());
+
+            // 后台删除磁盘文件，不阻塞 UI；删除大文件时 Windows Defender 实时扫描可能耗时数百毫秒到数秒，
+            // 删除失败（如被其他程序占用）记录日志并提示，此时卡片已移除、文件残留由用户决定处理。
+            try
+            {
+                await Task.Run(() => File.Delete(item.Path));
             }
             catch (Exception ex)
             {
                 Logger.Log($"[MainWindow] 删除壁纸文件失败: {ex}");
                 MessageBox.Show("删除壁纸文件失败（文件可能正被占用）：\n" + item.Path + "\n\n" + ex.Message,
-                    "删除失败", MessageBoxButton.OK, MessageBoxImage.Error);
-                return; // 文件未删除成功，不移除卡片
+                    "删除失败", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
-
-            // 文件删除成功后，复用 RemoveItem 逻辑移除卡片（解除正在使用的屏幕壁纸、配置清理、刷新界面）
-            RemoveItem(item);
         }
 
         // ---------- 状态展示 ----------
