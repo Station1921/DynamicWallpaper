@@ -17,6 +17,8 @@
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>false</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <DebugSymbols>false</DebugSymbols>
+    <DebugType>none</DebugType>
     <!-- 原生库自解压：让 WebView2Loader.dll 等非托管库嵌入 exe，运行时由单文件宿主
          自动解压到系统临时目录（%TEMP%\.net\DynamicWallpaper_xxx\）并加载。
          程序目录只保留 exe 单文件，无需外置 WebView2Loader.dll（用户只拷 exe 也能运行）。 -->
@@ -38,13 +40,14 @@
     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
   </PropertyGroup>
 
-  <!-- 网页壁纸为独立可选模块，排除出主工程编译。注：主工程现已直接依赖 WebView2
-       （视频壁纸 Provider 使用 WebView2 + HTML5 video），该模块仍独立编译排除，
-       避免其与主工程的 WebView2 引用重复/冲突。 -->
+  <!-- hls.js（HLS/m3u8 播放内核）：内嵌进主程序 exe，远程 m3u8 壁纸由 WebProvider
+       读取后以 NavigateToString 注入 WebView2 流式播放，无需 CDN 或外置 DLL。
+       网页壁纸模块（DynamicWallpaper.Web\WebProvider.cs）现已随主工程一起编译，
+       不再作为独立程序集加载。 -->
   <ItemGroup>
-    <Compile Remove="DynamicWallpaper.Web\**" />
-    <Page Remove="DynamicWallpaper.Web\**" />
-    <ApplicationDefinition Remove="DynamicWallpaper.Web\**" />
+    <EmbeddedResource Include="DynamicWallpaper.Web\hls.min.js">
+      <LogicalName>hls.min.js</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <!-- 视频壁纸渲染内核：WebView2（Win11 25H2 raised desktop 下 WPF MediaElement 无法被 DWM 合成，
@@ -71,5 +74,15 @@
       <LogicalName>ffmpeg.exe</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
+
+  <!-- 发布时清理伴随文件：单文件发布后仍会输出 .pdb 与引用的 XML 文档，
+       对于独立 exe 这些文件无用，发布后自动删除，保持发布目录只有 exe。 -->
+  <Target Name="RemoveExtraPublishFiles" AfterTargets="Publish">
+    <ItemGroup>
+      <ExtraFiles Include="$(PublishDir)*.pdb" />
+      <ExtraFiles Include="$(PublishDir)*.xml" />
+    </ItemGroup>
+    <Delete Files="@(ExtraFiles)" />
+  </Target>
 
 </Project>
