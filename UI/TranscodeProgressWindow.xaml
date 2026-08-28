@@ -3,11 +3,59 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="正在转码" Height="170" Width="440"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
-        Background="#1B1B22" Foreground="White"
-        ShowInTaskbar="False" Topmost="True" WindowStyle="ToolWindow">
-    <StackPanel Margin="20,16">
-        <TextBlock x:Name="FileText" FontSize="13" Foreground="#D8D8E0" TextTrimming="CharacterEllipsis" Margin="0,0,0,14"/>
-        <ProgressBar x:Name="Progress" Height="8" Minimum="0" Maximum="100" Background="#2A2A33" Foreground="#4C8DFF"/>
-        <TextBlock x:Name="StatusText" FontSize="11" Foreground="#8A8A95" Margin="0,10,0,0" Text="正在准备…"/>
-    </StackPanel>
+        Background="Transparent" Foreground="White"
+        ShowInTaskbar="False" Topmost="True"
+        WindowStyle="None" AllowsTransparency="True">
+    <Window.Resources>
+        <Style x:Key="RoundedProgressBar" TargetType="ProgressBar">
+            <Setter Property="Foreground" Value="#4C8DFF"/>
+            <Setter Property="Background" Value="#2A2A33"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ProgressBar">
+                        <Grid x:Name="TemplateRoot" SnapsToDevicePixels="true">
+                            <Rectangle Fill="{TemplateBinding Background}" RadiusX="4" RadiusY="4"/>
+                            <Rectangle x:Name="PART_Track" Margin="0"/>
+                            <Decorator x:Name="PART_Indicator" HorizontalAlignment="Left" Margin="0">
+                                <Grid>
+                                    <Rectangle Fill="{TemplateBinding Foreground}" RadiusX="4" RadiusY="4"/>
+                                </Grid>
+                            </Decorator>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    <Border Background="#1B1B22" CornerRadius="8" BorderBrush="#2E2E3A" BorderThickness="1">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="36"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- 自定义标题栏 -->
+            <Border Grid.Row="0" Background="#12121A" CornerRadius="8,8,0,0"
+                    MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+                <Grid>
+                    <TextBlock Text="正在转码" Foreground="#E8E8F0" FontSize="13"
+                               VerticalAlignment="Center" Margin="14,0,0,0"/>
+                    <Button Content="&#xE711;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                            Width="36" Height="26" HorizontalAlignment="Right"
+                            Background="Transparent" BorderThickness="0" Foreground="#A0A0B0"
+                            Click="CloseButton_Click" VerticalAlignment="Center"
+                            WindowChrome.IsHitTestVisibleInChrome="True"/>
+                </Grid>
+            </Border>
+
+            <!-- 内容区 -->
+            <StackPanel Grid.Row="1" Margin="20,14,20,16">
+                <TextBlock x:Name="FileText" FontSize="13" Foreground="#D8D8E0" TextTrimming="CharacterEllipsis" Margin="0,0,0,14"/>
+                <ProgressBar x:Name="Progress" Height="8" Minimum="0" Maximum="100"
+                             Style="{StaticResource RoundedProgressBar}"/>
+                <TextBlock x:Name="StatusText" FontSize="11" Foreground="#8A8A95" Margin="0,10,0,0" Text="正在准备…"/>
+            </StackPanel>
+        </Grid>
+    </Border>
 </Window>
