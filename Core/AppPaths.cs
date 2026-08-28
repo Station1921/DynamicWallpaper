@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Linq;
 
 namespace DynamicWallpaper.Core
 {
@@ -46,27 +48,32 @@ namespace DynamicWallpaper.Core
 
         /// <summary>
         /// 获取可用的 ffmpeg 路径，优先级（共用优先，避免无谓释放文件）：
-        ///   1) 程序目录已有 ffmpeg.exe → 直接使用，不释放；
+        ///   1) 程序目录已有 ffmpeg.exe → 编码器预检通过则直接使用，不释放；
         ///   2) 扫描 PATH 与本机常见安装位置（winget / ProgramFiles / C:\ffmpeg 等）→
         ///      找到即直接调用，不做任何释放（毫秒级纯文件检查）；
-        ///   3) 以上都没有 → 才从内嵌资源解压到程序目录兜底。
+        ///   3) 全盘深度受限扫描（固定磁盘，最大深度 5）→ 找到直接调用，不释放；
+        ///   4) 以上都没有 → 才从内嵌资源解压到程序目录兜底。
         /// 仅在需要转码时由调用方触发（平时浏览库 / 设壁纸完全不调用，零开销）。
-        /// 不做编码器探测（libx264/HEVC），直接用；若某版本缺编码器导致转码失败，
-        /// 由调用方回退到 <see cref="ForceEmbeddedFfmpeg"/> 解压内嵌兜底。
+        /// 外部候选与程序目录已有版本都会做编码器预检（要求含 libx264 + HEVC 解码 + x64），
+        /// 过滤剪映精简版等缺编码器/32 位的版本，避免选中后转码失败再走兜底。
         /// </summary>
         public static string? EnsureFfmpeg()
         {
             if (_cachedFfmpeg != null) return _cachedFfmpeg;
 
-            // 1) 程序目录已有 → 直接用
+            // 1) 程序目录已有 → 预检通过直接用
             string local = Path.Combine(RootDirectory, "ffmpeg.exe");
             if (File.Exists(local))
             {
-                Logger.Log("[AppPaths] 使用程序目录 ffmpeg: " + local);
-                return _cachedFfmpeg = local;
+                if (IsUsableFfmpeg(local))
+                {
+                    Logger.Log("[AppPaths] 使用程序目录 ffmpeg: " + local);
+                    return _cachedFfmpeg = local;
+                }
+                Logger.Log("[AppPaths] 程序目录 ffmpeg 不可用（缺编码器或 32 位），继续查找…");
             }
 
-            // 2) 扫描 PATH + 常见安装位置 → 找到直接调用，不释放
+            // 2) 扫描 PATH + 常见安装位置 → 找到预检通过则直接调用，不释放
             string? found = FindExternalFfmpeg();
             if (found != null)
             {
@@ -74,7 +81,17 @@ namespace DynamicWallpaper.Core
                 return _cachedFfmpeg = found;
             }
 
-            // 3) 都没有 → 才解压内嵌资源兜底
+            // 3) 全盘深度受限扫描固定磁盘（兼容老版"先扫描电脑全盘"设计）
+            Logger.Log("[AppPaths] PATH/常见位置未找到可用 ffmpeg，开始全盘快速扫描…");
+            found = ScanAllFixedDrivesForFfmpeg();
+            if (found != null)
+            {
+                Logger.Log("[AppPaths] 全盘扫描找到可用 ffmpeg: " + found);
+                return _cachedFfmpeg = found;
+            }
+
+            // 4) 都没有 → 才解压内嵌资源兜底
+            Logger.Log("[AppPaths] 全盘扫描未找到 ffmpeg，准备释放内嵌资源…");
             try
             {
                 using var stream = System.Reflection.Assembly.GetExecutingAssembly()
@@ -122,8 +139,8 @@ namespace DynamicWallpaper.Core
             }
         }
 
-        /// <summary>扫描 PATH 与常见安装位置，返回第一个存在的 ffmpeg.exe（不验证编码器）。
-        /// 纯本地文件检查（File.Exists），毫秒级；无则返回 null。</summary>
+        /// <summary>扫描 PATH 与常见安装位置，返回第一个通过编码器预检的 ffmpeg.exe；无则返回 null。
+        /// 纯本地文件检查（File.Exists），毫秒级；仅对命中的候选做一次预检。</summary>
         private static string? FindExternalFfmpeg()
         {
             var candidates = new List<string>(16);
@@ -179,12 +196,136 @@ namespace DynamicWallpaper.Core
                 catch { /* 权限/非法路径跳过 */ }
             }
 
-            return candidates.Count > 0 ? candidates[0] : null;
+            foreach (var c in candidates)
+            {
+                if (IsUsableFfmpeg(c))
+                {
+                    Logger.Log("[AppPaths] PATH/常见位置候选通过预检: " + c);
+                    return c;
+                }
+                Logger.Log("[AppPaths] 候选不可用（缺编码器/32位），跳过: " + c);
+            }
+            return null;
         }
 
         private static void AddIfExists(List<string> list, string path)
         {
             try { if (File.Exists(path)) list.Add(path); } catch { }
+        }
+
+        /// <summary>深度受限的全盘扫描：遍历所有固定磁盘（C:\, D:\ 等），
+        /// 查找名为 ffmpeg.exe 的可执行文件，最大递归深度 5（覆盖 Fluent-M3U8/mediago/PrismGrab 等常见安装深度）。
+        /// 优先匹配根目录、bin 子目录、ffmpeg 子目录下的 ffmpeg.exe。
+        /// 命中候选须通过编码器预检；遇到无权限目录自动跳过，不会长时间挂起。</summary>
+        private static string? ScanAllFixedDrivesForFfmpeg()
+        {
+            try
+            {
+                foreach (var drive in DriveInfo.GetDrives())
+                {
+                    if (!drive.IsReady) continue;
+                    if (drive.DriveType != DriveType.Fixed) continue; // 只扫本地固定盘
+
+                    var root = drive.RootDirectory.FullName;
+                    // 根目录直接检查
+                    try
+                    {
+                        var rootExe = Path.Combine(root, "ffmpeg.exe");
+                        if (File.Exists(rootExe) && IsUsableFfmpeg(rootExe)) return rootExe;
+                    }
+                    catch { }
+
+                    // 深度受限 BFS
+                    var queue = new Queue<(string path, int depth)>();
+                    try
+                    {
+                        foreach (var dir in Directory.EnumerateDirectories(root))
+                            queue.Enqueue((dir, 1));
+                    }
+                    catch { continue; }
+
+                    while (queue.Count > 0)
+                    {
+                        var (dir, depth) = queue.Dequeue();
+                        try
+                        {
+                            // 优先检查当前目录及常见子目录
+                            var exe = Path.Combine(dir, "ffmpeg.exe");
+                            if (File.Exists(exe) && IsUsableFfmpeg(exe)) return exe;
+                            exe = Path.Combine(dir, "bin", "ffmpeg.exe");
+                            if (File.Exists(exe) && IsUsableFfmpeg(exe)) return exe;
+
+                            if (depth < 5)
+                            {
+                                foreach (var sub in Directory.EnumerateDirectories(dir))
+                                {
+                                    var name = Path.GetFileName(sub).ToLowerInvariant();
+                                    // 跳过明显不需要的目录，减少扫描量
+                                    if (name is "windows" or "programdata" or "inetpub" or "$recycle.bin"
+                                        or "system volume information") continue;
+                                    queue.Enqueue((sub, depth + 1));
+                                }
+                            }
+                        }
+                        catch { /* 无权限/路径过长等跳过 */ }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log("[AppPaths] 全盘扫描 ffmpeg 异常: " + ex.Message);
+            }
+            return null;
+        }
+
+        /// <summary>判断 ffmpeg 是否可用：要求 x64 架构、含 libx264 编码器与 HEVC(h265) 解码器。
+        /// 运行 `-hide_banner -encoders -decoders` 读取输出，超时 3 秒内未完成则视为不可用。
+        /// 过滤剪映精简版（缺 libx264）与 32 位版本（HEVC 转码大分辨率易 malloc 失败）。</summary>
+        private static bool IsUsableFfmpeg(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return false;
+
+                // 架构检查：读 PE 头 Machine 字段，0x8664 = x64
+                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    if (fs.Length < 0x40) return false;
+                    fs.Seek(0x3C, SeekOrigin.Begin);
+                    var peOff = new byte[4];
+                    if (fs.Read(peOff, 0, 4) != 4) return false;
+                    int pe = BitConverter.ToInt32(peOff, 0);
+                    if (pe + 4 + 2 > fs.Length) return false;
+                    fs.Seek(pe + 4, SeekOrigin.Begin);
+                    var machine = new byte[2];
+                    if (fs.Read(machine, 0, 2) != 2) return false;
+                    if (BitConverter.ToUInt16(machine, 0) != 0x8664) return false;
+                }
+
+                // 编码器/解码器检查
+                var psi = new ProcessStartInfo(path, "-hide_banner -encoders -decoders")
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using (var p = Process.Start(psi))
+                {
+                    if (p == null) return false;
+                    string output = p.StandardOutput.ReadToEnd() + "\n" + p.StandardError.ReadToEnd();
+                    if (!p.WaitForExit(3000))
+                    {
+                        try { p.Kill(); } catch { }
+                        return false;
+                    }
+                    return output.Contains("libx264") && output.Contains("hevc");
+                }
+            }
+            catch
+            {
+                return false;
+            }
         }
     }
 }
