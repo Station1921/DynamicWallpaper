@@ -41,7 +41,7 @@ namespace DynamicWallpaper.Providers
 
         private static readonly HashSet<string> WebExtensions = new()
         {
-            ".html", ".htm", ".xhtml"
+            ".html", ".htm", ".xhtml", ".m3u8"
         };
     }
 }
