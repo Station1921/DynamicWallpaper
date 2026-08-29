@@ -142,8 +142,14 @@ namespace DynamicWallpaper.UI
             }
 
             // 在线直播模式：不下载，直接根据扩展名识别类型并返回
-            if (OnlineChk.IsChecked == true)
+            // m3u8 是 HLS 流媒体播放列表，下载到本地后 segment 相对路径/直播流无法解析，
+            // 强制走在线直播模式，由 WebProvider + hls.js 流式播放。
+            bool isM3u8Url = uri.AbsolutePath.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase);
+            if (OnlineChk.IsChecked == true || isM3u8Url)
             {
+                if (isM3u8Url && OnlineChk.IsChecked != true)
+                    Logger.Log($"m3u8 链接自动切换为在线直播模式：{text}");
+
                 var extension = Path.GetExtension(CleanPathForExt(text));
                 var isImage = ImageExtensions.Contains(extension);
                 var isM3u8 = extension.Equals(".m3u8", StringComparison.OrdinalIgnoreCase);
