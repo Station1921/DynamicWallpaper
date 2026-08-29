@@ -38,6 +38,13 @@ namespace DynamicWallpaper.Core
         /// <summary>串行化所有变更屏幕壁纸状态的操作（设置/清除/停止），防止启动自动恢复
         /// 与手动"设为壁纸"并发执行导致 Provider 被交叉 Dispose、渲染窗口被误关。</summary>
         private readonly SemaphoreSlim _screenOpLock = new(1, 1);
+
+        /// <summary>当前进行中的屏幕操作取消源。新操作（切换/解除/退出）在排队等锁前先取消它，
+        /// 使正在无限等待加载（网络壁纸加载慢）的旧操作立即回滚并释放锁，实现"手动打断加载"；
+        /// 用户不主动切换/解除/退出时，旧操作会一直等加载完成，不再自动回退。</summary>
+        private CancellationTokenSource? _opCts;
+        private readonly object _opCtsLock = new();
+
         private bool _userPaused;
 
         /// <summary>每屏复用的静态壁纸 WebView2 层（窗口+Controller 仅创建一次，切换静态图仅重新导航，
@@ -150,6 +157,7 @@ namespace DynamicWallpaper.Core
             Providers.GifProvider.FitMode = fit;
             Providers.VideoProvider.FitMode = fit;
             Providers.StaticFadeProvider.FitMode = fit;
+            Providers.WebProvider.FitMode = fit;
 
             // 立即刷新当前正在渲染的壁纸（WPF Image 属性需在 UI 线程更新）
             foreach (var st in _states.Values)
@@ -178,7 +186,24 @@ namespace DynamicWallpaper.Core
                 case Providers.GifProvider gif: gif.ApplyFitMode(); break;
                 case Providers.VideoProvider vid: vid.ApplyFitMode(); break;
                 case Providers.StaticFadeProvider fade: fade.ApplyFitMode(); break;
+                case Providers.WebProvider web: web.ApplyFitMode(); break;
             }
+        }
+
+        /// <summary>开始一次屏幕操作：先打断上一个进行中的操作（使其尽快释放 _screenOpLock，
+        /// 实现手动打断加载），再排队等锁；拿锁后返回本次操作的取消令牌。若排队期间又被更新的
+        /// 操作打断（令牌已取消），调用方应在拿到锁后立即检查并退出。</summary>
+        private async Task<CancellationToken> BeginScreenOperationAsync()
+        {
+            var cts = new CancellationTokenSource();
+            lock (_opCtsLock)
+            {
+                try { _opCts?.Cancel(); } catch { }
+                try { _opCts?.Dispose(); } catch { }
+                _opCts = cts;
+            }
+            await _screenOpLock.WaitAsync();
+            return cts.Token;
         }
 
         /// <summary>将指定内容设为某屏壁纸。screenIndex 默认 0（主屏）。
@@ -187,9 +212,10 @@ namespace DynamicWallpaper.Core
         /// status 为可选切换状态回调（正在切换/已应用/失败原因），供 UI 状态栏反馈。</summary>
         public async Task SetWallpaperAsync(string path, WallpaperType type, int screenIndex = 0, bool save = true, Action<string>? status = null)
         {
-            await _screenOpLock.WaitAsync();
+            var opToken = await BeginScreenOperationAsync();
             try
             {
+                if (opToken.IsCancellationRequested) return; // 排队期间已被更新的操作打断
                 if (!_states.TryGetValue(screenIndex, out var st)) return;
 
                 status?.Invoke("正在切换：" + Path.GetFileName(path));
@@ -222,14 +248,15 @@ namespace DynamicWallpaper.Core
                         if (isRemoteUrl)
                             throw new InvalidOperationException("在线壁纸需要 WebView2 运行库，请确认已安装 Microsoft Edge WebView2 Runtime。");
 
-                        // 当前屏若有窗口层壁纸在运行，先销毁（系统壁纸层直接承载静态图，无需叠化）
+                        // 当前屏若有窗口层壁纸在运行，先异步销毁（系统壁纸层直接承载静态图，无需叠化）；
+                        // 不 await：WebView2 Controller.Close() 可能长时间阻塞，同步等待会拖住切换。
                         if (prevProvider != null)
                         {
-                            await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                            System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
                             {
                                 try { prevProvider.Dispose(); }
                                 catch (Exception ex) { Logger.Log($"[WallpaperManager] 旧壁纸 Dispose 异常: {ex.Message}"); }
-                            });
+                            }, System.Windows.Threading.DispatcherPriority.Background);
                         }
                         SetSystemWallpaper(path);
                         st.Provider = null;
@@ -295,11 +322,11 @@ namespace DynamicWallpaper.Core
                     IntPtr staticWorkerW = await Task.Run(() => WorkerWInjector.AcquireWorkerW(st.Bounds));
                     if (staticWorkerW == IntPtr.Zero)
                     {
-                        // 拿不到 WorkerW 时销毁刚创建的新窗口，还原旧状态，避免残留
-                        await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                        // 拿不到 WorkerW 时销毁刚创建的新窗口，还原旧状态，避免残留（异步销毁不阻塞）
+                        System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
                         {
                             try { st.Provider?.Dispose(); } catch { }
-                        });
+                        }, System.Windows.Threading.DispatcherPriority.Background);
                         st.Provider = prevProvider;
                         st.IsStaticImage = prevIsStaticImage;
                         throw new InvalidOperationException("无法获取桌面 WorkerW 层，请尝试重启资源管理器或系统。");
@@ -323,10 +350,10 @@ namespace DynamicWallpaper.Core
                             // 图片未就绪：销毁新静态层，恢复旧壁纸（旧视频窗口仍挂在承载层上），
                             // 避免"销毁旧层后新层空白"的黑屏/无壁纸状态。
                             Logger.Log("[WallpaperManager] 静态层图片未就绪，回退恢复原壁纸");
-                            await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                            System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
                             {
                                 try { st.Provider?.Dispose(); } catch { }
-                            });
+                            }, System.Windows.Threading.DispatcherPriority.Background);
                             st.Provider = prevProvider;
                             st.IsStaticImage = prevIsStaticImage;
                             status?.Invoke("切换失败：静态图加载未就绪（已保持原壁纸）");
@@ -335,14 +362,15 @@ namespace DynamicWallpaper.Core
                     }
                     if (st.Provider == null) return;
 
-                    // 销毁旧壁纸（动态 A 或旧静态层），静态 WebView2 层已就绪，无残留
+                    // 销毁旧壁纸（动态 A 或旧静态层），静态 WebView2 层已就绪，无残留。
+                    // 异步销毁不等待：WebView2 销毁可能长时间阻塞，同步等待会让切换无响应。
                     if (prevProvider != null)
                     {
-                        await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                        System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
                         {
                             try { prevProvider.Dispose(); }
                             catch (Exception ex) { Logger.Log($"[WallpaperManager] 旧壁纸 Dispose 异常: {ex.Message}"); }
-                        });
+                        }, System.Windows.Threading.DispatcherPriority.Background);
                     }
 
                     // 清掉旧的 WPF 静态复用层（新方案不再创建，仅清理历史遗留）
@@ -429,11 +457,11 @@ namespace DynamicWallpaper.Core
                 IntPtr workerW = await Task.Run(() => WorkerWInjector.AcquireWorkerW(st.Bounds));
                 if (workerW == IntPtr.Zero)
                 {
-                    // 拿不到 WorkerW 时销毁刚创建的新窗口，还原旧状态，避免残留
-                    await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                    // 拿不到 WorkerW 时销毁刚创建的新窗口，还原旧状态，避免残留（异步销毁不阻塞）
+                    System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
                     {
                         try { st.Provider?.Dispose(); } catch { }
-                    });
+                    }, System.Windows.Threading.DispatcherPriority.Background);
                     st.Provider = oldProvider;
                     st.IsStaticImage = oldIsStaticImage;
                     st.LastPath = oldPath;
@@ -489,7 +517,21 @@ namespace DynamicWallpaper.Core
                 // 静态→动态：旧状态是 WebView2 静态层，同样支持窗口级 alpha 叠化，
                 // 静态层淡出 + 视频层淡入，无系统壁纸层残留问题——静态图已由窗口层承载，
                 // 系统壁纸层保持原壁纸，不再参与切换）。
-                await CrossfadeAsync(st, oldProvider, childHwnd);
+                bool switched = await CrossfadeAsync(st, oldProvider, childHwnd, opToken);
+                if (!switched)
+                {
+                    // 新壁纸未就绪（网络加载挂起、或等待被新操作打断）：CrossfadeAsync 已异步销毁新窗口，
+                    // 这里回滚状态字段，旧壁纸继续显示，不写配置。
+                    st.Provider = oldProvider;
+                    st.IsStaticImage = oldIsStaticImage;
+                    st.LastPath = oldPath;
+                    st.LastType = oldType;
+                    st.WorkerW = oldWorkerW;
+                    status?.Invoke(opToken.IsCancellationRequested
+                        ? "已取消切换（新壁纸加载被打断）"
+                        : "切换失败：壁纸加载未就绪（已保持原壁纸）");
+                    return;
+                }
 
                 if (save) PersistAssignments();
                 status?.Invoke("已应用：" + Path.GetFileName(path));
@@ -501,17 +543,78 @@ namespace DynamicWallpaper.Core
             }
         }
 
-        /// <summary>新壁纸淡入 + 旧壁纸淡出（300ms 窗口级 alpha 叠化）。叠化结束后销毁旧 Provider。</summary>
-        private async Task CrossfadeAsync(ScreenState st, IWallpaperProvider? oldProvider, IntPtr newHwnd)
+        /// <summary>新壁纸淡入 + 旧壁纸淡出（300ms 窗口级 alpha 叠化）。叠化结束后销毁旧 Provider。
+        /// 返回 true 表示新壁纸已成功显示；false 表示未就绪已回滚（旧壁纸保持显示，新窗口已销毁），
+        /// 调用方应恢复旧壁纸状态字段。等待就绪为无限等待（网络加载慢时一直等），但可由 opToken
+        /// 打断——用户切换/解除/退出时新操作先取消本令牌，本方法立即回滚释放锁，绝不阻塞新操作。</summary>
+        private async Task<bool> CrossfadeAsync(ScreenState st, IWallpaperProvider? oldProvider, IntPtr newHwnd, CancellationToken opToken)
         {
             // 新窗口先置透明，避免挂载瞬间闪出
             try { Win32.SetLayeredWindowAttributes(newHwnd, 0, 0, Win32.LWA_ALPHA); } catch { }
 
-            // 等新视频真正可播（透明背景，未就绪时露出旧壁纸、视觉无变化）；
-            // 就绪后再叠化，避免"叠化期间新窗口空白、视频加载好后突然跳入"的闪动。
-            if (st.Provider is VideoProvider newVp)
-                await newVp.WaitVideoReadyAsync(TimeSpan.FromSeconds(8));
-            if (st.Provider == null) return; // 等待期间壁纸被清除/切换，中止过渡
+            // 等新壁纸内容真正就绪（视频首帧解码 / WebView2 初始化并注入 hls 页）：
+            // 统一走 IWallpaperProvider.WaitReadyAsync，覆盖 VideoProvider 与 WebProvider，
+            // 就绪前新窗口保持透明（露出旧壁纸，视觉无变化）；就绪后再叠化，
+            // 避免"叠化期间新窗口空白、被直接显示成白屏/黑屏"的闪动。
+            // 无限等待 + opToken 取消：网络壁纸加载慢时一直等（不自动回退），
+            // 用户点其他壁纸/解除/退出时新操作取消 opToken → 立即回滚释放锁。
+            var provider = st.Provider;
+            if (provider != null)
+            {
+                try { await provider.WaitReadyAsync(Timeout.InfiniteTimeSpan, opToken); }
+                catch (OperationCanceledException)
+                {
+                    // 被新操作打断（用户切换/解除/退出）：销毁未就绪的新窗口（异步，不阻塞），
+                    // 返回 false 让调用方回滚状态字段并释放锁，新操作随即拿到锁继续执行。
+                    Logger.Log("[Crossfade] 等待壁纸就绪被新操作打断，取消本次切换");
+                    var newProvider = provider;
+                    System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        try { newProvider?.Dispose(); }
+                        catch (Exception ex) { Logger.Log($"[WallpaperManager] 被打断新壁纸 Dispose 异常: {ex.Message}"); }
+                    }, System.Windows.Threading.DispatcherPriority.Background);
+                    return false;
+                }
+                catch (Exception ex) { Logger.Log($"[Crossfade] 等待就绪异常（继续显示）: {ex.Message}"); }
+            }
+            if (st.Provider == null) return false; // 等待期间壁纸被清除/切换，中止过渡
+
+            // 就绪检查：内容真正可显示才叠化。未就绪（网络壁纸加载挂起、签名过期、网络不可达等）
+            // 时回滚——销毁未就绪的新窗口（异步，不阻塞），旧壁纸继续显示，锁立即释放，
+            // 后续切换/解除/退出不再被卡住。就绪的判定必须回 UI 线程（HasVideoContent 有 WPF 亲和）。
+            bool ready = false;
+            try
+            {
+                ready = await System.Windows.Application.Current.Dispatcher.InvokeAsync(() => IsContentReady(provider));
+            }
+            catch (Exception ex) { Logger.Log($"[Crossfade] 就绪检查异常: {ex.Message}"); }
+
+            if (!ready)
+            {
+                var newProvider = provider;
+                Logger.Log("[Crossfade] 新壁纸未就绪，回滚保持旧壁纸显示");
+                System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    try { newProvider?.Dispose(); }
+                    catch (Exception ex) { Logger.Log($"[WallpaperManager] 未就绪新壁纸 Dispose 异常: {ex.Message}"); }
+                }, System.Windows.Threading.DispatcherPriority.Background);
+                return false;
+            }
+
+            // 旧 Provider 的 Handle 必须在 UI 线程获取（WPF 窗口/WindowInteropHelper 有线程亲和性），
+            // 后台渐变线程直接访问 oldProvider.Handle 会抛“调用线程无法访问此对象”。
+            IntPtr oldHwnd = IntPtr.Zero;
+            if (oldProvider != null)
+            {
+                try
+                {
+                    oldHwnd = await System.Windows.Application.Current.Dispatcher.InvokeAsync(() => oldProvider.Handle);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"[Crossfade] 获取旧壁纸句柄异常: {ex.Message}");
+                }
+            }
 
             await Task.Run(async () =>
             {
@@ -525,25 +628,23 @@ namespace DynamicWallpaper.Core
                         int oldAlpha = 255 - newAlpha;
                         if (newHwnd != IntPtr.Zero)
                             Win32.SetLayeredWindowAttributes(newHwnd, 0, (byte)newAlpha, Win32.LWA_ALPHA);
-                        if (oldProvider != null)
-                        {
-                            IntPtr oh = oldProvider.Handle;
-                            if (oh != IntPtr.Zero)
-                                Win32.SetLayeredWindowAttributes(oh, 0, (byte)oldAlpha, Win32.LWA_ALPHA);
-                        }
+                        if (oldHwnd != IntPtr.Zero)
+                            Win32.SetLayeredWindowAttributes(oldHwnd, 0, (byte)oldAlpha, Win32.LWA_ALPHA);
                         await Task.Delay(FadeStepMs);
                     }
                 }
                 finally
                 {
                     // 叠化结束（正常完成或中途被中断），销毁旧 Provider，避免窗口泄漏。
-                    // 复核兜底：旧 Provider 销毁必须在 UI 线程（WPF RenderWindow / WebView2 Controller
-                    // 归属创建线程），但必须用 Dispatcher.InvokeAsync 异步调度——不阻塞后台渐变线程；
-                    // Background 优先级避免销毁动作抢占 UI 输入响应；try/catch 兜底，
-                    // 防止 CoreWebView2Controller.Close()/DestroyWindow 长时间阻塞或异常中断切换流程。
+                    // 旧 Provider 销毁必须在 UI 线程（WPF RenderWindow / WebView2 Controller
+                    // 归属创建线程），但绝不能 await 等待完成：WebView2 Controller.Close()
+                    // （尤其网络壁纸还在加载/拉流时）会同步阻塞数百毫秒到数秒，
+                    // 一旦 await，切换流程（持有 _screenOpLock）与后续任何操作都会被拖住，
+                    // 表现为"切换后僵持、托盘强退无效"。改为 fire-and-forget 低优先级调度，
+                    // 切换立即返回，销毁在后台悄悄完成。
                     if (oldProvider != null)
                     {
-                        await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                        System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
                         {
                             try { oldProvider.Dispose(); }
                             catch (Exception ex) { Logger.Log($"[WallpaperManager] 旧壁纸 Dispose 异常: {ex.Message}"); }
@@ -551,14 +652,27 @@ namespace DynamicWallpaper.Core
                     }
                 }
             });
+            return true;
+        }
+
+        /// <summary>判断 Provider 内容是否已就绪（在 UI 线程调用）。</summary>
+        private bool IsContentReady(IWallpaperProvider? provider)
+        {
+            switch (provider)
+            {
+                case VideoProvider vp: return vp.HasVideoContent();
+                case WebProvider wp: return wp.IsContentReady;
+                default: return provider != null;
+            }
         }
 
         /// <summary>清空某一屏的壁纸（恢复为系统静态壁纸）。</summary>
         public async Task ClearScreenAsync(int screenIndex)
         {
-            await _screenOpLock.WaitAsync();
+            var opToken = await BeginScreenOperationAsync();
             try
             {
+                if (opToken.IsCancellationRequested) return; // 排队期间已被更新的操作打断
                 if (_states.TryGetValue(screenIndex, out var st))
                     await CleanupScreenAsync(st, restoreWallpaper: true);
                 PersistAssignments();
@@ -578,9 +692,10 @@ namespace DynamicWallpaper.Core
         /// </summary>
         public async Task StopAsync(bool restoreWallpaper = true, bool persistState = true)
         {
-            await _screenOpLock.WaitAsync();
+            var opToken = await BeginScreenOperationAsync();
             try
             {
+                if (opToken.IsCancellationRequested) return; // 排队期间已被更新的操作打断
                 var tasks = _states.Values.Select(st => CleanupScreenAsync(st, restoreWallpaper)).ToArray();
                 await Task.WhenAll(tasks);
                 if (persistState) PersistAssignments();
@@ -656,16 +771,24 @@ namespace DynamicWallpaper.Core
                 }
             }
 
-            // 1. 在 UI 线程释放 WPF Provider（关闭渲染窗口）
+            // 1. 在 UI 线程摘除 Provider 引用；Dispose 改为低优先级异步执行——
+            // WebView2 Controller.Close()（尤其 m3u8 在线流）会同步阻塞数百毫秒到数秒，
+            // 若在此 await，解除壁纸/切换壁纸都会被拖住；先摘引用让界面立即响应，
+            // 销毁动作在 UI 空闲时（ApplicationIdle）再执行，不抢占用户操作。
             await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
             {
-                if (st.Provider != null)
-                {
-                    st.Provider.Dispose();
-                    st.Provider = null;
-                }
+                var provider = st.Provider;
+                st.Provider = null;
                 st.LastPath = "";
                 st.IsStaticImage = false;
+                if (provider != null)
+                {
+                    System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        try { provider.Dispose(); }
+                        catch (Exception ex) { Logger.Log($"[WallpaperManager] Provider.Dispose 异常: {ex.Message}"); }
+                    }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                }
             });
 
             // 复用静态层可能并非当前 st.Provider（动态屏时隐藏保活），上面未销毁则在此销毁
@@ -687,12 +810,19 @@ namespace DynamicWallpaper.Core
                     st.WorkerW = IntPtr.Zero;
                 }
 
-                // 解除静态图片壁纸（用户点击"解除壁纸"）时必须恢复系统原壁纸；
-                // 其它情况仅当所有屏都已清空时才恢复，避免切换同屏壁纸时黑屏闪烁。
-                // 注：静态壁纸由窗口层承载后，系统壁纸层始终为程序启动前的原壁纸，
-                // 此处 RestoreSystemWallpaper 仅把原壁纸再设一遍（无害，保证退出/解除后桌面正确）。
+                // 解除任意壁纸后强制桌面重绘：WebProvider 等从未走 ForceDwmComposition 的层
+                // 在摘离后 DWM 合成状态可能停留，导致桌面黑屏（即便系统壁纸已是原壁纸、
+                // RestoreSystemWallpaper 正确跳过，画面仍未重绘）。此刷新触发 DWM 重新合成底层
+                // 静态壁纸，使其透出。对所有壁纸类型统一执行，安全无害。
+                if (restoreWallpaper)
+                    WorkerWInjector.RefreshDesktop();
+
+                // 解除/退出时必须把系统原壁纸再设一遍，强制桌面重绘：
+                // 即使注册表里的 Wallpaper 值看起来已经是原壁纸，DWM 仍可能因为窗口层残留
+                // 而保持黑屏；IDesktopWallpaper/SPI 重新设置会触发系统刷新，确保原壁纸透出。
+                // 切换同屏壁纸时 restoreWallpaper=false，不会走到这里，不会导致闪屏。
                 if (restoreWallpaper && (wasStaticImage || _states.Values.All(s => s.Provider == null && !s.IsStaticImage)))
-                    RestoreSystemWallpaper();
+                    RestoreSystemWallpaper(forceRepaint: true);
             });
         }
 
@@ -728,7 +858,8 @@ namespace DynamicWallpaper.Core
         }
 
         /// <summary>把系统桌面恢复为程序启动前的静态壁纸。</summary>
-        private void RestoreSystemWallpaper()
+        /// <param name="forceRepaint">为 true 时不再因注册表已是原壁纸而跳过，强制重新设置以触发桌面重绘。</param>
+        private void RestoreSystemWallpaper(bool forceRepaint = false)
         {
             try
             {
@@ -738,21 +869,24 @@ namespace DynamicWallpaper.Core
 
                 if (!string.IsNullOrEmpty(_originalWallpaper) && File.Exists(_originalWallpaper))
                 {
-                    // 系统壁纸层恒为启动前原壁纸（静态壁纸由窗口层承载），若当前已是原壁纸则
-                    // 无需重设，避免重复设置触发系统异步重绘/残留闪烁（解除时的"先旧图后原壁纸"）。
-                    try
+                    // 非强制时：系统壁纸层恒为启动前原壁纸（静态壁纸由窗口层承载），若当前已是原壁纸则
+                    // 无需重设，避免重复设置触发系统异步重绘/残留闪烁（切换壁纸时）。
+                    if (!forceRepaint)
                     {
-                        string? current = Registry.GetValue(@"HKEY_CURRENT_USER\Control Panel\Desktop", "Wallpaper", "") as string;
-                        if (string.Equals(current, _originalWallpaper, StringComparison.OrdinalIgnoreCase))
+                        try
                         {
-                            Logger.Log("[WallpaperManager] 系统壁纸已是原壁纸，跳过恢复");
-                            return;
+                            string? current = Registry.GetValue(@"HKEY_CURRENT_USER\Control Panel\Desktop", "Wallpaper", "") as string;
+                            if (string.Equals(current, _originalWallpaper, StringComparison.OrdinalIgnoreCase))
+                            {
+                                Logger.Log("[WallpaperManager] 系统壁纸已是原壁纸，跳过恢复");
+                                return;
+                            }
                         }
+                        catch { /* 注册表读取失败时继续走设置流程 */ }
                     }
-                    catch { /* 注册表读取失败时继续走设置流程 */ }
 
                     Win32.SetDesktopWallpaper(_originalWallpaper);
-                    Logger.Log($"[WallpaperManager] 已恢复系统壁纸: {_originalWallpaper}");
+                    Logger.Log($"[WallpaperManager] 已恢复系统壁纸(force={forceRepaint}): {_originalWallpaper}");
                 }
                 else
                 {
