@@ -409,6 +409,32 @@ namespace DynamicWallpaper.Desktop
 
         public static bool IsValid(IntPtr hWnd) => hWnd != IntPtr.Zero && Win32.IsWindow(hWnd);
 
+        /// <summary>强制桌面图标层/壁纸层重绘：对 SHELLDLL_DefView 执行 SW_HIDE→SW_SHOWNORMAL。
+        /// 解除壁纸（尤其 WebProvider 这种从未走 ForceDwmComposition 的层）后，DWM 合成状态可能
+        /// 停留导致桌面黑屏（系统壁纸虽已记录为原壁纸、恢复逻辑正确跳过，却未重绘）。此刷新
+        /// 触发 DWM 重新合成底层静态壁纸，使其透出。等效于手动"显示桌面图标"开关。</summary>
+        public static void RefreshDesktop()
+        {
+            try
+            {
+                IntPtr defView = FindTopLevelDefView();
+                if (defView != IntPtr.Zero)
+                {
+                    Logger.Log("[WorkerW] 触发桌面刷新（DefView SW_HIDE→SW_SHOWNORMAL）");
+                    Win32.ShowWindow(defView, Win32.SW_HIDE);
+                    Win32.ShowWindow(defView, Win32.SW_SHOWNORMAL);
+                }
+                else
+                {
+                    Logger.Log("[WorkerW] 未找到 SHELLDLL_DefView，跳过桌面刷新");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[WorkerW] 桌面刷新异常: {ex.Message}");
+            }
+        }
+
         /// <summary>销毁由本程序注入到父窗口里的子窗口，避免旧壁纸残留。</summary>
         public static void DetachChildren(IntPtr parent)
         {
