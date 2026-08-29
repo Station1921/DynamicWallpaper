@@ -246,11 +246,13 @@ namespace DynamicWallpaper.Core
 
                     while (queue.Count > 0)
                     {
-                        var (dir, depth) = queue.Dequeue();
-                        try
-                        {
-                            // 优先检查当前目录及常见子目录
-                            var exe = Path.Combine(dir, "ffmpeg.exe");
+                    var (dir, depth) = queue.Dequeue();
+                    // 跳过回收站目录，避免使用被删除/临时的 ffmpeg 副本
+                    if (dir.IndexOf("$RECYCLE.BIN", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                    try
+                    {
+                        // 优先检查当前目录及常见子目录
+                        var exe = Path.Combine(dir, "ffmpeg.exe");
                             if (File.Exists(exe) && IsUsableFfmpeg(exe)) return exe;
                             exe = Path.Combine(dir, "bin", "ffmpeg.exe");
                             if (File.Exists(exe) && IsUsableFfmpeg(exe)) return exe;
