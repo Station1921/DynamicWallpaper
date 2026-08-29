@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Controls;
 using DynamicWallpaper.Core;
 
 namespace DynamicWallpaper.UI
@@ -10,9 +11,11 @@ namespace DynamicWallpaper.UI
 
         public SettingsWindow(Config config, WallpaperManager manager)
         {
-            InitializeComponent();
+            // 必须在 InitializeComponent 之前赋值：XAML 中 TextBox 初始 Text 赋值会触发
+            // TextChanged，事件处理器会访问 _config，未赋值即 NullReferenceException。
             _config = config;
             _manager = manager;
+            InitializeComponent();
 
             MuteBox.IsChecked = _config.Mute;
             FsBox.IsChecked = _config.PauseOnFullscreen;
@@ -26,6 +29,64 @@ namespace DynamicWallpaper.UI
                 case "fit": FitFit.IsChecked = true; break;
                 case "center": FitCenter.IsChecked = true; break;
                 default: FitFill.IsChecked = true; break;
+            }
+
+            // 缓存管理：初始化开关与保留天数，并刷新缓存占用显示
+            AutoCleanBox.IsChecked = _config.AutoCleanCache;
+            RetentionDaysBox.Text = _config.CacheRetentionDays.ToString();
+            RefreshCacheInfo();
+        }
+
+        /// <summary>刷新「当前缓存占用」说明文字。</summary>
+        private void RefreshCacheInfo()
+        {
+            var (count, bytes) = CacheManager.GetStats();
+            CacheInfo.Text = $"当前缓存占用：{CacheManager.FormatSize(bytes)}（{count} 个文件）。" +
+                             "清除只删除缩略图与悬停预览缓存，不影响已下载的壁纸。";
+        }
+
+        private void ClearCache_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var (count, bytes) = CacheManager.ClearAll();
+                CacheStatus.Text = $"已清除 {count} 个文件，释放 {CacheManager.FormatSize(bytes)}。";
+                RefreshCacheInfo();
+            }
+            catch (Exception ex)
+            {
+                CacheStatus.Text = "清除缓存时出错：" + ex.Message;
+            }
+        }
+
+        private void AutoClean_Changed(object sender, RoutedEventArgs e)
+        {
+            _config.AutoCleanCache = AutoCleanBox.IsChecked == true;
+            if (int.TryParse(RetentionDaysBox.Text, out var d) && d > 0)
+                _config.CacheRetentionDays = d;
+            _config.Save();
+        }
+
+        private void RetentionDays_Changed(object sender, TextChangedEventArgs e)
+        {
+            if (_config == null) return; // 双保险：初始化早期事件
+            if (int.TryParse(RetentionDaysBox.Text, out var d) && d > 0)
+            {
+                _config.CacheRetentionDays = d;
+                _config.Save();
+            }
+        }
+
+        /// <summary>限制保留天数输入框仅接受数字（含粘贴/IME 输入）。</summary>
+        private void NumberOnly_Preview(object sender, System.Windows.Input.TextCompositionEventArgs e)
+        {
+            foreach (var c in e.Text)
+            {
+                if (!char.IsDigit(c))
+                {
+                    e.Handled = true;
+                    break;
+                }
             }
         }
 
