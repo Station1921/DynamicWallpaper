@@ -1036,7 +1036,7 @@
                                                         <Binding Path="ActualHeight" RelativeSource="{RelativeSource Self}"/>
                                                     </MultiBinding>
                                                 </Grid.Clip>
-                                                <local:MediaHoverImage SourceUri="{Binding ThumbnailUrl}" HoverSourceUri="{Binding PreviewUrl}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                <local:MediaHoverImage SourceUri="{Binding ThumbnailUrl}" HoverSourceUri="{Binding PreviewUrl}" CacheRemoteMediaOnFailure="False" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                                 <Border VerticalAlignment="Bottom" Background="#CC000000" Padding="8" CornerRadius="0,0,9,9">
                                                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                                                         <Button Content="下载" Style="{StaticResource PrimaryBtn}" Padding="10,4" FontSize="11" HorizontalAlignment="Center" Click="OnlineDownload_Click"
