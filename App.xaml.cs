@@ -14,6 +14,9 @@ namespace DynamicWallpaper
     {
         private NotifyIcon? _tray;
         private Mutex? _singleInstanceMutex;
+        /// <summary>周期性缓存清理定时器：仅当配置开启「自动清理过期缓存」时才有意义，
+        /// 定时器本身常驻，回调内部读取最新配置决定是否执行。</summary>
+        private System.Threading.Timer? _cacheCleanupTimer;
 
         protected override void OnStartup(StartupEventArgs e)
         {
@@ -99,6 +102,26 @@ namespace DynamicWallpaper
             {
                 Logger.Log("[App] 静默启动（--silent），仅驻留托盘");
             }
+
+            // 启动周期缓存清理：启动 5 分钟后首次检查，之后每 6 小时一次。
+            // 回调内部读取最新配置，仅在用户开启「自动清理过期缓存」时删除超期文件。
+            StartCacheCleanupTimer();
+        }
+
+        private void StartCacheCleanupTimer()
+        {
+            try
+            {
+                _cacheCleanupTimer = new System.Threading.Timer(_ =>
+                {
+                    try { Core.CacheManager.RunScheduledCleanup(); }
+                    catch (Exception ex) { Logger.Log("[App] 缓存自动清理异常: " + ex.Message); }
+                }, null, TimeSpan.FromMinutes(5), TimeSpan.FromHours(6));
+            }
+            catch (Exception ex)
+            {
+                Logger.Log("[App] 缓存清理定时器启动失败: " + ex.Message);
+            }
         }
 
         private void ShowMain()
@@ -123,6 +146,7 @@ namespace DynamicWallpaper
         protected override void OnExit(ExitEventArgs e)
         {
             _tray?.Dispose();
+            try { _cacheCleanupTimer?.Dispose(); } catch { }
             try { _singleInstanceMutex?.ReleaseMutex(); } catch { }
             _singleInstanceMutex?.Dispose();
             base.OnExit(e);
