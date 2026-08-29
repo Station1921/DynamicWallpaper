@@ -1,5 +1,7 @@
 using System;
 using System.Drawing;
+using System.Threading;
+using System.Threading.Tasks;
 using DynamicWallpaper.Models;
 
 namespace DynamicWallpaper.Providers
@@ -24,5 +26,11 @@ namespace DynamicWallpaper.Providers
         void Play();
         void Pause();
         void SetMuted(bool muted);
+
+        /// <summary>
+        /// 等待渲染内容真正就绪（如视频首帧解码完成、WebView2 初始化并注入页面完成）。
+        /// 默认实现直接返回已完成；需要等待的 Provider 可覆盖实现。
+        /// </summary>
+        Task WaitReadyAsync(TimeSpan timeout, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 }
