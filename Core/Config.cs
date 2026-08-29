@@ -20,6 +20,12 @@ namespace DynamicWallpaper.Core
         /// <summary>壁纸适应方式：fill=铺满裁剪 / fit=完整显示 / center=原始居中。默认 fill（保持旧版行为）。</summary>
         public string WallpaperFit { get; set; } = "fill";
 
+        /// <summary>是否启用周期性自动清理过期缓存（缩略图/悬停预览）。默认关闭，由用户在设置中开启。</summary>
+        public bool AutoCleanCache { get; set; } = false;
+
+        /// <summary>自动清理的保留天数：超过该天数的缓存文件会被删除。默认 30 天。</summary>
+        public int CacheRetentionDays { get; set; } = 30;
+
         public List<string> Library { get; set; } = new();
 
         /// <summary>每屏壁纸分配（持久化，重启后自动恢复）。</summary>
