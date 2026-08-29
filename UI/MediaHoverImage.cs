@@ -89,6 +89,21 @@ namespace DynamicWallpaper.UI
             set => SetValue(PosterSourceProperty, value);
         }
 
+        /// <summary>
+        /// 是否允许在远程预览视频播放失败时把视频下载到本地 hovercache 作为兜底。
+        /// 默认 true（本地壁纸库使用）。在线壁纸列表应设为 false：网络壁纸不生成 hovercache 缓存文件，
+        /// 远程预览打不开时直接保留封面，不落地临时视频文件。
+        /// </summary>
+        public static readonly DependencyProperty CacheRemoteMediaOnFailureProperty =
+            DependencyProperty.Register(nameof(CacheRemoteMediaOnFailure), typeof(bool), typeof(MediaHoverImage),
+                new PropertyMetadata(true));
+
+        public bool CacheRemoteMediaOnFailure
+        {
+            get => (bool)GetValue(CacheRemoteMediaOnFailureProperty);
+            set => SetValue(CacheRemoteMediaOnFailureProperty, value);
+        }
+
         public MediaHoverImage()
         {
             _poster = new Image
@@ -276,6 +291,9 @@ namespace DynamicWallpaper.UI
         /// </summary>
         private async Task EnsureLocalMediaAsync(string uri, bool retry)
         {
+            // 在线壁纸（CacheRemoteMediaOnFailure=false）不把远程预览视频落地到 hovercache，
+            // 避免网络壁纸在悬停失败时产生无用的本地缓存文件。
+            if (!CacheRemoteMediaOnFailure) return;
             try
             {
                 var local = await DownloadToCacheAsync(uri, CancellationToken.None);
