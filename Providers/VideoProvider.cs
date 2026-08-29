@@ -73,8 +73,8 @@ namespace DynamicWallpaper.Providers
 
         /// <summary>WebView2 Environment 静态缓存（进程内共享，userDataFolder 显式指定避免默认目录冲突）。
         /// userDataFolder 固定到程序根目录 WebView2，避免单文件发布解压场景下落到 C 盘临时目录。
-        /// internal 供 StaticFadeProvider 复用同一实例，避免静态过渡窗口重复创建 Environment 造成延迟。</summary>
-        internal static readonly Lazy<Task<CoreWebView2Environment>> EnvironmentLazy = new(() =>
+        /// public 供 WebProvider/StaticFadeProvider 复用同一实例，避免重复创建 Environment 及多个用户数据目录。</summary>
+        public static readonly Lazy<Task<CoreWebView2Environment>> EnvironmentLazy = new(() =>
             CoreWebView2Environment.CreateAsync(
                 null,
                 Path.Combine(AppPaths.RootDirectory, "WebView2"),
@@ -317,7 +317,9 @@ namespace DynamicWallpaper.Providers
         /// 因此必须等待 _controller / _navTcs 就绪后再轮询内容状态，否则会立即误判未就绪。</summary>
         public async Task<bool> WaitVideoReadyAsync(TimeSpan timeout)
         {
-            var deadline = DateTime.UtcNow + timeout;
+            // InfiniteTimeSpan 表示无限等待（由 WallpaperManager 用取消令牌打断），
+            // 用于网络/慢速加载场景：用户不主动切换/解除/退出就持续等待，不做超时回退。
+            var deadline = timeout == Timeout.InfiniteTimeSpan ? DateTime.MaxValue : DateTime.UtcNow + timeout;
             while (DateTime.UtcNow < deadline)
             {
                 if (_disposed) return false;
@@ -348,6 +350,13 @@ namespace DynamicWallpaper.Providers
                 await Task.Delay(100);
             }
             return false;
+        }
+
+        /// <summary>实现 IWallpaperProvider.WaitReadyAsync，供 WallpaperManager 统一等待内容就绪。</summary>
+        public async Task WaitReadyAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
+        {
+            if (!await WaitVideoReadyAsync(timeout).WaitAsync(timeout, cancellationToken))
+                throw new TimeoutException("视频/图片加载超时");
         }
 
         public void Dispose()
