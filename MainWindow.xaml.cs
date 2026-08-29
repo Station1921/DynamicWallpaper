@@ -431,10 +431,14 @@ namespace DynamicWallpaper
         /// 返回转码结果：成功 / 失败 / 被用户或软件关闭取消（半成品由窗口 OnClosing 删除）。</summary>
         private async Task<TranscodeOutcome> RunStreamTranscodeAsync(string ffmpeg, string path, string outPath, bool copy)
         {
+            bool isM3u8 = path.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase);
+            // 本地 m3u8 需要允许所有扩展名并开放常用协议；本地 ts 保持默认即可
+            string m3u8Flags = isM3u8 ? "-allowed_extensions ALL -protocol_whitelist file,http,https,tcp,tls,crypto " : "";
             var args = copy
-                ? $"-y -nostats -i \"{path}\" -c copy \"{outPath}\""
-                : $"-y -nostats -i \"{path}\" -c:v libx264 -preset veryfast -c:a aac -movflags +faststart \"{outPath}\"";
+                ? $"-y -nostats {m3u8Flags}-i \"{path}\" -c copy \"{outPath}\""
+                : $"-y -nostats {m3u8Flags}-i \"{path}\" -c:v libx264 -preset veryfast -c:a aac -movflags +faststart \"{outPath}\"";
             UI.TranscodeProgressWindow? win = null;
+            var stderrBuf = new System.Text.StringBuilder();
             try
             {
                 var psi = new ProcessStartInfo(ffmpeg, args)
@@ -442,7 +446,9 @@ namespace DynamicWallpaper
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardOutput = true,
-                    RedirectStandardError = true
+                    RedirectStandardError = true,
+                    // m3u8 里的相对 segment 路径需要以 playlist 所在目录为基准解析
+                    WorkingDirectory = Path.GetDirectoryName(path) ?? AppPaths.RootDirectory
                 };
                 using var p = Process.Start(psi);
                 if (p == null) return TranscodeOutcome.Failed;
@@ -452,6 +458,12 @@ namespace DynamicWallpaper
                 win.Show();
                 win.SetIndeterminate(copy ? "正在封装为 mp4（不重编码）…" : "正在转码为 mp4…");
                 win.TranscodeProcess = p;
+
+                p.ErrorDataReceived += (_, e) =>
+                {
+                    if (!string.IsNullOrEmpty(e.Data))
+                        stderrBuf.AppendLine(e.Data);
+                };
 
                 p.BeginOutputReadLine();
                 p.BeginErrorReadLine();
@@ -470,16 +482,21 @@ namespace DynamicWallpaper
                     return TranscodeOutcome.Cancelled;
                 }
                 bool ok = p.ExitCode == 0 && File.Exists(outPath);
-                if (!ok) { SafeClose(win); return TranscodeOutcome.Failed; }
+                if (!ok)
+                {
+                    Logger.Log($"[流媒体转码] 失败: ffmpeg exit={p.ExitCode}\n{stderrBuf}");
+                    SafeClose(win);
+                    return TranscodeOutcome.Failed;
+                }
                 win.MarkCompleted();
                 SafeClose(win);
                 return TranscodeOutcome.Success;
             }
             catch (Exception ex)
             {
+                Logger.Log($"[流媒体转码] 异常: {ex}\nstderr={stderrBuf}");
                 UI.TranscodeProgressWindow.CleanupPartial(outPath);
                 SafeClose(win);
-                Logger.Log($"[流媒体转码] 异常: {ex}");
                 return TranscodeOutcome.Failed;
             }
         }
@@ -604,7 +621,17 @@ namespace DynamicWallpaper
             if (dlg.IsOnline && !string.IsNullOrEmpty(dlg.OnlineUrl))
             {
                 var url = dlg.OnlineUrl!;
-                if (Library.Any(i => i.Path.Equals(url, StringComparison.OrdinalIgnoreCase))) return;
+                var existing = Library.FirstOrDefault(i => i.Path.Equals(url, StringComparison.OrdinalIgnoreCase));
+                if (existing != null)
+                {
+                    // 重复网址不再无反应：直接应用该地址为壁纸（库中保持唯一，不重复添加）
+                    Logger.Log($"在线壁纸已存在，直接应用：{url}（{dlg.OnlineType}）");
+                    await ApplyItemAsync(existing, SelectedScreen());
+                    RefreshEmpty();
+                    RefreshActiveBadges();
+                    SetStatusText(StatusSummary());
+                    return;
+                }
 
                 var onlineItem = new WallpaperItem(url, dlg.OnlineType);
                 Library.Add(onlineItem);
@@ -756,8 +783,15 @@ namespace DynamicWallpaper
             remove.Click += (_, _) => RemoveItem(item);
 
             menu.Items.Add(setMenu);
-            // 网络壁纸（URL）没有本地文件，不提供"打开位置"和"本地删除"
-            if (!IsWebUrl(item.Path))
+            // 网络壁纸（URL）：提供"打开网址"用默认浏览器打开当前网页地址；
+            // 本地壁纸：提供"打开壁纸位置"。
+            if (IsWebUrl(item.Path))
+            {
+                var openUrl = new MenuItem { Header = "打开网址" };
+                openUrl.Click += (_, _) => OpenWallpaperUrl(item);
+                menu.Items.Add(openUrl);
+            }
+            else
             {
                 var openLocation = new MenuItem { Header = "打开壁纸位置" };
                 openLocation.Click += (_, _) => OpenWallpaperLocation(item);
@@ -788,6 +822,31 @@ namespace DynamicWallpaper
             RefreshEmpty();
             RefreshActiveBadges();
             SetStatusText(StatusSummary());
+        }
+
+        /// <summary>用默认浏览器打开网络壁纸的网页地址。</summary>
+        private void OpenWallpaperUrl(WallpaperItem item)
+        {
+            var url = item.Path;
+            if (string.IsNullOrEmpty(url))
+            {
+                MessageBox.Show("壁纸网址为空。", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            if (!IsWebUrl(url))
+            {
+                MessageBox.Show("该壁纸不是网络壁纸。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            try
+            {
+                Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[MainWindow] 打开壁纸网址失败: {ex}");
+                MessageBox.Show("打开壁纸网址失败：" + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         /// <summary>用资源管理器打开壁纸文件所在文件夹并选中该文件。</summary>
