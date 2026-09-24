@@ -306,21 +306,21 @@ namespace DynamicWallpaper
             return rect;
         }
 
-        /// <summary>边缘光的渐隐遮罩：alpha 沿"边缘→屏幕中心"多段非线性衰减。</summary>
+        /// <summary>边缘光的渐隐遮罩：alpha 沿"边缘→屏幕中心"多段非线性衰减。
+        /// 显式 StartPoint/EndPoint（offset 0 固定在屏幕边缘一侧）——
+        /// 不用角度构造函数：实测 180°/270° 时起点落在屏幕内侧，右/下两条光带会变成硬边。</summary>
         private static System.Windows.Media.Brush CreateEdgeFadeMask(string side)
         {
-            double angle = side switch
+            System.Windows.Point start, end;
+            switch (side)
             {
-                "top" => 90.0,     // 渐变起点在屏幕边缘一侧
-                "bottom" => 270.0,
-                "left" => 0.0,
-                _ => 180.0,
-            };
+                case "top": start = new System.Windows.Point(0, 0); end = new System.Windows.Point(0, 1); break;    // 贴上边缘亮 → 向下淡出
+                case "bottom": start = new System.Windows.Point(0, 1); end = new System.Windows.Point(0, 0); break; // 贴下边缘亮 → 向上淡出
+                case "left": start = new System.Windows.Point(0, 0); end = new System.Windows.Point(1, 0); break;   // 贴左边缘亮 → 向右淡出
+                default: start = new System.Windows.Point(1, 0); end = new System.Windows.Point(0, 0); break;       // 贴右边缘亮 → 向左淡出
+            }
             byte[] alphas = { 0xE0, 0x96, 0x46, 0x16, 0x00 };
-            var brush = new LinearGradientBrush(
-                System.Windows.Media.Color.FromArgb(0xFF, 0, 0, 0),
-                System.Windows.Media.Color.FromArgb(0x00, 0, 0, 0), angle);
-            brush.GradientStops.Clear();
+            var brush = new LinearGradientBrush { StartPoint = start, EndPoint = end };
             for (int i = 0; i < alphas.Length; i++)
                 brush.GradientStops.Add(new GradientStop(
                     System.Windows.Media.Color.FromArgb(alphas[i], 0, 0, 0),
