@@ -493,15 +493,18 @@ namespace DynamicWallpaper.Core
         public async Task SetWallpaperAsync(string path, WallpaperType type, int screenIndex = 0, bool save = true, Action<string>? status = null)
         {
             System.Threading.Interlocked.Increment(ref _opActive);
-            var opToken = await BeginScreenOperationAsync();
+            // 切换过渡流光：点击即显示（不等串行锁与后续加载），保证"点下去马上有反馈"
+            if (_states.TryGetValue(screenIndex, out var stEarly))
+                SwitchOverlay.Begin(screenIndex, stEarly.Bounds);
+            System.Threading.CancellationToken opToken;
+            try { opToken = await BeginScreenOperationAsync(); }
+            catch { SwitchOverlay.End(screenIndex); throw; }
             try
             {
                 if (opToken.IsCancellationRequested) return; // 排队期间已被更新的操作打断
                 if (!_states.TryGetValue(screenIndex, out var st)) return;
 
                 status?.Invoke("正在切换：" + Path.GetFileName(path));
-                // 切换过渡流光：600ms 后仍未完成才显示（快速切换无感，网络壁纸等慢切换可见）
-                SwitchOverlay.Begin(screenIndex, st.Bounds);
 
                 // 同步壁纸适应方式到各 Provider（静态属性，Provider 创建时读取）
                 SyncFitMode();

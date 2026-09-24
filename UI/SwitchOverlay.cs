@@ -18,8 +18,8 @@ namespace DynamicWallpaper
     ///
     /// - 透明 + 点击穿透（WS_EX_TRANSPARENT）+ 不激活不抢焦点（WS_EX_NOACTIVATE），
     ///   不影响桌面/应用任何交互；Topmost 仅在切换的数秒内存在。
-    /// - 延迟 600ms 才出现：本地壁纸切换通常 1s 内完成，不闪流光；
-    ///   只有网络壁纸等慢切换才会看到。
+    /// - 点击"设为壁纸"即显示（不等下载/加载），140ms 淡入；最短可见 420ms 避免快切一闪而过；
+    ///   切换完成后 200ms 淡出。
     /// - 按屏幕索引管理会话：SetWallpaperAsync 进入时 Begin，finally 中 End。
     /// </summary>
     public static class SwitchOverlay
@@ -40,12 +40,18 @@ namespace DynamicWallpaper
         {
             public System.Threading.CancellationTokenSource? DelayCts;
             public Window? Window;
+            public DateTime ShownAtUtc;
         }
 
         private static readonly object Gate = new();
         private static readonly Dictionary<int, Session> Sessions = new();
 
-        /// <summary>开始一次切换过渡会话。600ms 后仍未结束才显示流光（快速切换无感）。</summary>
+        /// <summary>进入切换会话时立即显示流光（点击后马上有反馈）。</summary>
+        private const int FadeInMs = 140;
+        /// <summary>最短可见时长：极快切换也至少停留这么久，避免一闪而过的抖动感。</summary>
+        private const int MinVisibleMs = 420;
+
+        /// <summary>开始一次切换过渡会话：立即显示流光（点击"设为壁纸"就响应）。</summary>
         public static void Begin(int screenIndex, Rectangle bounds)
         {
             var disp = System.Windows.Application.Current?.Dispatcher;
@@ -54,7 +60,7 @@ namespace DynamicWallpaper
 
             lock (Gate)
             {
-                // 同屏已有会话（上一场尚未结束）：复用其窗口，仅重置延迟
+                // 同屏已有会话（上一场尚未结束）：复用其窗口，不重置延迟
                 if (Sessions.TryGetValue(screenIndex, out var existing))
                 {
                     try { existing.DelayCts?.Cancel(); } catch { }
@@ -63,16 +69,14 @@ namespace DynamicWallpaper
                 }
                 var cts = new System.Threading.CancellationTokenSource();
                 Sessions[screenIndex] = new Session { DelayCts = cts };
-                _ = disp.InvokeAsync(async () =>
-                {
-                    try { await Task.Delay(600, cts.Token); }
-                    catch (OperationCanceledException) { return; }
-                    ShowCore(screenIndex, bounds, cts.Token);
-                });
+                // Send（最高）优先级：即使 UI 线程正在忙于建窗口/初始化 WebView2 的普通优先级队列，
+                // 也优先把流光挂上屏幕，避免"切换完了才看到动画"
+                _ = disp.InvokeAsync(() => ShowCore(screenIndex, bounds, cts.Token),
+                    System.Windows.Threading.DispatcherPriority.Send);
             }
         }
 
-        /// <summary>结束会话：取消延迟显示；已显示的流光淡出后关闭。</summary>
+        /// <summary>结束会话：取消尚未显示的流光；已显示的按最短可见时长停留后淡出关闭。</summary>
         public static void End(int screenIndex)
         {
             var disp = System.Windows.Application.Current?.Dispatcher;
@@ -88,29 +92,44 @@ namespace DynamicWallpaper
             try { s.DelayCts?.Cancel(); s.DelayCts?.Dispose(); } catch { }
             var w = s.Window;
             if (w == null) return;
-            try
+
+            int elapsed = (int)(DateTime.UtcNow - s.ShownAtUtc).TotalMilliseconds;
+            int wait = Math.Max(0, MinVisibleMs - elapsed);
+            _ = disp.InvokeAsync(async () =>
             {
-                var fade = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(220))
+                try { if (wait > 0) await Task.Delay(wait); } catch { }
+                try
                 {
-                    EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
-                };
-                fade.Completed += (_, _) => { try { w.Close(); } catch { } };
-                w.BeginAnimation(UIElement.OpacityProperty, fade);
-            }
-            catch { try { w.Close(); } catch { } }
+                    var fade = new DoubleAnimation(w.Opacity, 0, TimeSpan.FromMilliseconds(200))
+                    {
+                        EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+                    };
+                    fade.Completed += (_, _) => { try { w.Close(); } catch { } };
+                    w.BeginAnimation(UIElement.OpacityProperty, fade);
+                }
+                catch { try { w.Close(); } catch { } }
+            });
         }
 
         private static void ShowCore(int screenIndex, Rectangle bounds, System.Threading.CancellationToken ct)
         {
             lock (Gate)
             {
-                // End 已先到（快速切换）：不再显示
+                // End 已先到（切换极快结束）：不再显示
                 if (ct.IsCancellationRequested || !Sessions.TryGetValue(screenIndex, out var s) || s.DelayCts == null || s.Window != null)
                     return;
                 try
                 {
-                    s.Window = BuildWindow(bounds);
-                    s.Window.Show();
+                    var w = BuildWindow(bounds);
+                    w.Opacity = 0;
+                    s.Window = w;
+                    w.Show();
+                    s.ShownAtUtc = DateTime.UtcNow;
+                    var fadeIn = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(FadeInMs))
+                    {
+                        EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+                    };
+                    w.BeginAnimation(UIElement.OpacityProperty, fadeIn);
                 }
                 catch (Exception ex)
                 {
