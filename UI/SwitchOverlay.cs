@@ -152,63 +152,146 @@ namespace DynamicWallpaper
             return w;
         }
 
-        /// <summary>两道不同速度/亮度、反向倾斜的流光，扫过全屏（超出部分被 Grid 裁剪）。</summary>
+        /// <summary>
+        /// 屏幕边缘「内发光彩虹流光」（沿四边循环流动 + 整体呼吸明暗）
+        /// + 中央弥散光晕（仿网络壁纸卡片的弥散质感）。
+        /// </summary>
         private static FrameworkElement BuildVisual(double screenW, double screenH)
         {
-            double diag = Math.Sqrt(screenW * screenW + screenH * screenH);
-
             var grid = new Grid { ClipToBounds = true, IsHitTestVisible = false };
 
-            var band = CreateStreak(diag, Math.Max(140, diag * 0.16), -16, 0x5A, 0x90, TimeSpan.FromMilliseconds(1700), 0.0);
-            var thin = CreateStreak(diag, Math.Max(60, diag * 0.06), -16, 0x40, 0xFF, TimeSpan.FromMilliseconds(1700), -120);
-            grid.Children.Add(band);
-            grid.Children.Add(thin);
+            // ── 中央弥散光晕：两团低透明度彩色光斑，缓慢脉动 ──
+            double baseSize = Math.Max(screenW, screenH) * 0.85;
+            grid.Children.Add(CreateDiffuseGlow(baseSize, System.Windows.Media.Color.FromArgb(0x44, 0x9C, 0x5C, 0xFF), 0, 0, 2400));
+            grid.Children.Add(CreateDiffuseGlow(baseSize * 0.62, System.Windows.Media.Color.FromArgb(0x38, 0x40, 0x8A, 0xFF), -screenW * 0.10, screenH * 0.08, 2900));
+
+            // ── 边缘内发光：四条向内渐隐的彩虹光带，沿边缘循环流动 ──
+            double thick = Math.Max(80, Math.Min(screenW, screenH) * 0.15);
+            var period = TimeSpan.FromMilliseconds(2600);
+            grid.Children.Add(CreateEdge("top", thick, period));
+            grid.Children.Add(CreateEdge("right", thick, period));
+            grid.Children.Add(CreateEdge("bottom", thick, period));
+            grid.Children.Add(CreateEdge("left", thick, period));
+
+            // 呼吸：整体透明度缓慢起伏
+            var breathe = new DoubleAnimation(0.62, 1.0, TimeSpan.FromMilliseconds(1700))
+            {
+                AutoReverse = true,
+                RepeatBehavior = RepeatBehavior.Forever,
+                EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
+            };
+            grid.BeginAnimation(UIElement.OpacityProperty, breathe);
             return grid;
         }
 
-        private static FrameworkElement CreateStreak(double diag, double thickness, double angle,
-            byte midAlpha, byte coreAlpha, TimeSpan period, double phaseOffset)
+        /// <summary>中央弥散光斑：径向渐变（中心有色→边缘透明）+ 缓慢缩放脉动。</summary>
+        private static FrameworkElement CreateDiffuseGlow(double size, System.Windows.Media.Color color,
+            double offsetX, double offsetY, int pulseMs)
         {
-            var rect = new System.Windows.Shapes.Rectangle
+            var scale = new ScaleTransform(1, 1);
+            var ellipse = new System.Windows.Shapes.Ellipse
             {
-                Width = diag,
-                Height = thickness,
+                Width = size,
+                Height = size,
                 HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
                 VerticalAlignment = System.Windows.VerticalAlignment.Center,
-                RenderTransformOrigin = new System.Windows.Point(0.5, 0.5),
                 RenderTransform = new TransformGroup
                 {
-                    Children =
+                    Children = { scale, new TranslateTransform(offsetX, offsetY) }
+                },
+                Fill = new RadialGradientBrush
+                {
+                    GradientStops =
                     {
-                        new RotateTransform(angle),
-                        new TranslateTransform(phaseOffset, 0),
+                        new GradientStop(color, 0.0),
+                        new GradientStop(System.Windows.Media.Color.FromArgb(0x00, color.R, color.G, color.B), 1.0),
                     }
                 },
             };
+            var pulse = new DoubleAnimation(1.0, 1.12, TimeSpan.FromMilliseconds(pulseMs))
+            {
+                AutoReverse = true,
+                RepeatBehavior = RepeatBehavior.Forever,
+                EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
+            };
+            scale.BeginAnimation(ScaleTransform.ScaleXProperty, pulse);
+            scale.BeginAnimation(ScaleTransform.ScaleYProperty, pulse);
+            return ellipse;
+        }
+
+        // 彩虹循环色（带透明度，边缘光不刺眼）
+        private static readonly System.Windows.Media.Color[] RainbowColors =
+        {
+            System.Windows.Media.Color.FromArgb(0x8C, 0xFF, 0x4D, 0x6D), // 红/粉
+            System.Windows.Media.Color.FromArgb(0x8C, 0xFF, 0x9D, 0x3C), // 橙
+            System.Windows.Media.Color.FromArgb(0x8C, 0xFF, 0xE1, 0x56), // 黄
+            System.Windows.Media.Color.FromArgb(0x8C, 0x4A, 0xE0, 0x8A), // 绿
+            System.Windows.Media.Color.FromArgb(0x8C, 0x2C, 0xD8, 0xE8), // 青
+            System.Windows.Media.Color.FromArgb(0x8C, 0x44, 0x8A, 0xFF), // 蓝
+            System.Windows.Media.Color.FromArgb(0x8C, 0xB0, 0x57, 0xFF), // 紫
+        };
+
+        /// <summary>
+        /// 单边内发光光带：彩虹渐变沿边缘流动（top/right 正向、bottom/left 反向 → 环绕方向一致），
+        /// 内侧用 OpacityMask 渐隐，只在屏幕边缘发亮。
+        /// </summary>
+        private static FrameworkElement CreateEdge(string side, double thickness, TimeSpan period)
+        {
+            bool horizontalEdge = side == "top" || side == "bottom";
+            bool forward = side == "top" || side == "right";
+
+            var rect = new System.Windows.Shapes.Rectangle();
+            if (horizontalEdge)
+            {
+                rect.Height = thickness;
+                rect.VerticalAlignment = side == "top"
+                    ? System.Windows.VerticalAlignment.Top
+                    : System.Windows.VerticalAlignment.Bottom;
+            }
+            else
+            {
+                rect.Width = thickness;
+                rect.HorizontalAlignment = side == "left"
+                    ? System.Windows.HorizontalAlignment.Left
+                    : System.Windows.HorizontalAlignment.Right;
+            }
+
             var brush = new LinearGradientBrush
             {
-                StartPoint = new System.Windows.Point(0, 0.5),
-                EndPoint = new System.Windows.Point(1, 0.5),
-                GradientStops =
-                {
-                    new GradientStop(System.Windows.Media.Color.FromArgb(0x00, 0xFF, 0xFF, 0xFF), 0.0),
-                    new GradientStop(System.Windows.Media.Color.FromArgb(midAlpha, 0xE8, 0xF2, 0xFF), 0.40),
-                    new GradientStop(System.Windows.Media.Color.FromArgb(coreAlpha, 0xFF, 0xFF, 0xFF), 0.50),
-                    new GradientStop(System.Windows.Media.Color.FromArgb(midAlpha, 0xE8, 0xF2, 0xFF), 0.60),
-                    new GradientStop(System.Windows.Media.Color.FromArgb(0x00, 0xFF, 0xFF, 0xFF), 1.0),
-                }
+                StartPoint = horizontalEdge ? new System.Windows.Point(0, 0.5) : new System.Windows.Point(0.5, 0),
+                EndPoint = horizontalEdge ? new System.Windows.Point(1, 0.5) : new System.Windows.Point(0.5, 1),
+                SpreadMethod = GradientSpreadMethod.Repeat,
             };
-            brush.Freeze();
+            // 一个完整彩虹周期（7 色均分），配合 Repeat + 平移一整圈实现无缝循环
+            for (int i = 0; i <= 7; i++)
+            {
+                brush.GradientStops.Add(new GradientStop(RainbowColors[i % 7], i / 7.0));
+            }
+            var tt = new TranslateTransform(0, 0);
+            brush.RelativeTransform = tt;
+            var flow = new DoubleAnimation(0, 1.0, period)
+            {
+                RepeatBehavior = RepeatBehavior.Forever,
+            };
+            if (!forward)
+            {
+                flow.From = 1.0;
+                flow.To = 0;
+            }
+            if (horizontalEdge) tt.BeginAnimation(TranslateTransform.XProperty, flow);
+            else tt.BeginAnimation(TranslateTransform.YProperty, flow);
             rect.Fill = brush;
 
-            if (((TransformGroup)rect.RenderTransform).Children[1] is TranslateTransform tt)
-            {
-                var anim = new DoubleAnimation(-diag, diag, period)
-                {
-                    RepeatBehavior = RepeatBehavior.Forever,
-                };
-                tt.BeginAnimation(TranslateTransform.XProperty, anim);
-            }
+            // 内侧渐隐：靠屏幕边缘一端不透明，向屏幕中心淡出
+            rect.OpacityMask = horizontalEdge
+                ? new LinearGradientBrush(
+                    System.Windows.Media.Color.FromArgb(0xFF, 0, 0, 0),
+                    System.Windows.Media.Color.FromArgb(0x00, 0, 0, 0),
+                    side == "top" ? 90.0 : 270.0)
+                : new LinearGradientBrush(
+                    System.Windows.Media.Color.FromArgb(0xFF, 0, 0, 0),
+                    System.Windows.Media.Color.FromArgb(0x00, 0, 0, 0),
+                    side == "left" ? 0.0 : 180.0);
             return rect;
         }
     }
