@@ -185,7 +185,7 @@ namespace DynamicWallpaper
             grid.Children.Add(CreateDiffuseGlow(baseSize * 0.62, System.Windows.Media.Color.FromArgb(0x38, 0x40, 0x8A, 0xFF), -screenW * 0.10, screenH * 0.08, 2900));
 
             // ── 边缘内发光：四条向内渐隐的彩虹光带，沿边缘循环流动 ──
-            double thick = Math.Max(80, Math.Min(screenW, screenH) * 0.15);
+            double thick = Math.Max(120, Math.Min(screenW, screenH) * 0.22);
             var period = TimeSpan.FromMilliseconds(2600);
             grid.Children.Add(CreateEdge("top", thick, period));
             grid.Children.Add(CreateEdge("right", thick, period));
@@ -238,16 +238,16 @@ namespace DynamicWallpaper
             return ellipse;
         }
 
-        // 彩虹循环色（带透明度，边缘光不刺眼）
+        // 彩虹循环色（低不透明度 + 多段渐隐，呈弥散光感而非硬色带）
         private static readonly System.Windows.Media.Color[] RainbowColors =
         {
-            System.Windows.Media.Color.FromArgb(0x8C, 0xFF, 0x4D, 0x6D), // 红/粉
-            System.Windows.Media.Color.FromArgb(0x8C, 0xFF, 0x9D, 0x3C), // 橙
-            System.Windows.Media.Color.FromArgb(0x8C, 0xFF, 0xE1, 0x56), // 黄
-            System.Windows.Media.Color.FromArgb(0x8C, 0x4A, 0xE0, 0x8A), // 绿
-            System.Windows.Media.Color.FromArgb(0x8C, 0x2C, 0xD8, 0xE8), // 青
-            System.Windows.Media.Color.FromArgb(0x8C, 0x44, 0x8A, 0xFF), // 蓝
-            System.Windows.Media.Color.FromArgb(0x8C, 0xB0, 0x57, 0xFF), // 紫
+            System.Windows.Media.Color.FromArgb(0x70, 0xFF, 0x5A, 0x76), // 红/粉
+            System.Windows.Media.Color.FromArgb(0x70, 0xFF, 0xA4, 0x4E), // 橙
+            System.Windows.Media.Color.FromArgb(0x70, 0xFF, 0xE3, 0x66), // 黄
+            System.Windows.Media.Color.FromArgb(0x70, 0x56, 0xE1, 0x93), // 绿
+            System.Windows.Media.Color.FromArgb(0x70, 0x3A, 0xDB, 0xE9), // 青
+            System.Windows.Media.Color.FromArgb(0x70, 0x50, 0x92, 0xFF), // 蓝
+            System.Windows.Media.Color.FromArgb(0x70, 0xB5, 0x63, 0xFF), // 紫
         };
 
         /// <summary>
@@ -301,17 +301,31 @@ namespace DynamicWallpaper
             else tt.BeginAnimation(TranslateTransform.YProperty, flow);
             rect.Fill = brush;
 
-            // 内侧渐隐：靠屏幕边缘一端不透明，向屏幕中心淡出
-            rect.OpacityMask = horizontalEdge
-                ? new LinearGradientBrush(
-                    System.Windows.Media.Color.FromArgb(0xFF, 0, 0, 0),
-                    System.Windows.Media.Color.FromArgb(0x00, 0, 0, 0),
-                    side == "top" ? 90.0 : 270.0)
-                : new LinearGradientBrush(
-                    System.Windows.Media.Color.FromArgb(0xFF, 0, 0, 0),
-                    System.Windows.Media.Color.FromArgb(0x00, 0, 0, 0),
-                    side == "left" ? 0.0 : 180.0);
+            // 内侧渐隐：非线性多段衰减（贴边最亮 → 快速变暗 → 长尾柔和），避免线性渐变看起来像硬色带
+            rect.OpacityMask = CreateEdgeFadeMask(side);
             return rect;
+        }
+
+        /// <summary>边缘光的渐隐遮罩：alpha 沿"边缘→屏幕中心"多段非线性衰减。</summary>
+        private static System.Windows.Media.Brush CreateEdgeFadeMask(string side)
+        {
+            double angle = side switch
+            {
+                "top" => 90.0,     // 渐变起点在屏幕边缘一侧
+                "bottom" => 270.0,
+                "left" => 0.0,
+                _ => 180.0,
+            };
+            byte[] alphas = { 0xE0, 0x96, 0x46, 0x16, 0x00 };
+            var brush = new LinearGradientBrush(
+                System.Windows.Media.Color.FromArgb(0xFF, 0, 0, 0),
+                System.Windows.Media.Color.FromArgb(0x00, 0, 0, 0), angle);
+            brush.GradientStops.Clear();
+            for (int i = 0; i < alphas.Length; i++)
+                brush.GradientStops.Add(new GradientStop(
+                    System.Windows.Media.Color.FromArgb(alphas[i], 0, 0, 0),
+                    i / (double)(alphas.Length - 1)));
+            return brush;
         }
     }
 }
