@@ -639,6 +639,14 @@ namespace DynamicWallpaper
                 var existing = Library.FirstOrDefault(i => i.Path.Equals(url, StringComparison.OrdinalIgnoreCase));
                 if (existing != null)
                 {
+                    // 库里旧条目可能是无扩展名直链被按扩展名误判的类型（如视频直链被记成图片，
+                    // 应用时走静态图路径 → 左上角裂图图标 + 黑屏回退）。用户本次在对话框明确
+                    // 选择了类型，以本次为准更正旧条目再应用。
+                    if (existing.Type != dlg.OnlineType)
+                    {
+                        Logger.Log($"在线壁纸类型更正：{url} {existing.Type} → {dlg.OnlineType}");
+                        existing.Retype(dlg.OnlineType);
+                    }
                     // 重复网址不再无反应：直接应用该地址为壁纸（库中保持唯一，不重复添加）
                     Logger.Log($"在线壁纸已存在，直接应用：{url}（{dlg.OnlineType}）");
                     await ApplyItemAsync(existing, SelectedScreen());

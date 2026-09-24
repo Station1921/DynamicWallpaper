@@ -70,6 +70,48 @@ namespace DynamicWallpaper.Core
             Uri.TryCreate(path, UriKind.Absolute, out var u) &&
             (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps);
 
+        /// <summary>远程直链 Content-Type 探测结果缓存（true=视频/音频流，false=图片）。</summary>
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> RemoteTypeProbeCache = new();
+
+        /// <summary>判断远程直链是否带可识别的图片扩展名。无扩展名的直链（网易等 CDN）
+        /// 无法凭 URL 区分图片/视频，必须按 Content-Type 探测。</summary>
+        private static bool HasImageExtension(string path)
+        {
+            try
+            {
+                return Path.GetExtension(path)?.ToLowerInvariant() is ".jpg" or ".jpeg" or ".png" or ".bmp" or ".webp";
+            }
+            catch { return false; }
+        }
+
+        /// <summary>HEAD 探测远程直链 Content-Type（4s 超时，结果缓存）。
+        /// 返回 true=视频/音频流、false=图片、null=探测失败或类型不明（调用方保持原处理）。</summary>
+        private static async Task<bool?> ProbeRemoteIsVideoAsync(string url)
+        {
+            if (RemoteTypeProbeCache.TryGetValue(url, out var cached)) return cached;
+            try
+            {
+                using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(4) };
+                try { http.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"); } catch { }
+                using var resp = await http.SendAsync(
+                    new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Head, url));
+                var ct = resp.Content?.Headers.ContentType?.MediaType ?? "";
+                bool? result;
+                if (ct.StartsWith("video/", StringComparison.OrdinalIgnoreCase) ||
+                    ct.StartsWith("audio/", StringComparison.OrdinalIgnoreCase)) result = true;
+                else if (ct.StartsWith("image/", StringComparison.OrdinalIgnoreCase)) result = false;
+                else result = null;
+                if (result != null) RemoteTypeProbeCache[url] = result.Value;
+                Logger.Log($"[WallpaperManager] 远程直链类型探测: {ct} → {(result == true ? "视频流" : result == false ? "图片" : "未知")}");
+                return result;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[WallpaperManager] 远程直链类型探测失败（保持原处理）: {ex.Message}");
+                return null;
+            }
+        }
+
         /// <summary>程序启动前系统原本的静态壁纸路径，解除桌面时恢复。</summary>
         private string _originalWallpaper = "";
 
@@ -458,6 +500,8 @@ namespace DynamicWallpaper.Core
                 if (!_states.TryGetValue(screenIndex, out var st)) return;
 
                 status?.Invoke("正在切换：" + Path.GetFileName(path));
+                // 切换过渡流光：600ms 后仍未完成才显示（快速切换无感，网络壁纸等慢切换可见）
+                SwitchOverlay.Begin(screenIndex, st.Bounds);
 
                 // 同步壁纸适应方式到各 Provider（静态属性，Provider 创建时读取）
                 SyncFitMode();
@@ -468,6 +512,19 @@ namespace DynamicWallpaper.Core
                 // 旧流程先销毁 A 会露出系统上一张静态壁纸（残留 C），再设 S，形成 A→C→S 的
                 // 中间停留；新流程 S 先落到底层（被 A 盖住、用户无感知），A 不做渐出、
                 // 通过 WebView2 过渡窗口把 S 渐入覆盖 A，最后统一清理，形成 A→S 无缝直切。
+                // 无扩展名的远程直链（网易等 CDN）凭 URL 无法区分图片/视频；若实为视频流
+                // 却按静态图渲染会建 <img> → 左上角裂图图标 + 10s 超时黑屏回退。
+                // HEAD 探测 Content-Type，视频流直接改走视频壁纸分支（结果缓存，只探一次）。
+                if (type == WallpaperType.Image && IsRemoteUrl(path) && !HasImageExtension(path))
+                {
+                    var probeVideo = await ProbeRemoteIsVideoAsync(path);
+                    if (probeVideo == true)
+                    {
+                        Logger.Log($"[WallpaperManager] 远程直链实为视频流，改走视频壁纸分支: {path}");
+                        type = WallpaperType.Video;
+                    }
+                }
+
                 if (type == WallpaperType.Image)
                 {
                     bool isRemoteUrl = IsRemoteUrl(path);
@@ -578,24 +635,40 @@ namespace DynamicWallpaper.Core
                         throw new InvalidOperationException("无法获取桌面 WorkerW 层，请尝试重启资源管理器或系统。");
                     }
 
-                    // UI 线程挂接并显示：img 未加载完成时窗口透明（露出旧动态层），
-                    // 加载完成后即显示静态图，再销毁旧动态层 → A→S 无缝直切、无残留、无秒级等待。
+                    // UI 线程挂接并显示：挂接前先把新层置为全透明——图片未就绪前不可见
+                    // （露出旧壁纸），否则加载慢/失败的 10s 内桌面被黑屏新层盖住，回退前
+                    // 一直黑屏且叠加旧层内容已可能被快速路径改写，表现为"黑屏卡死"。
                     await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
                     {
                         st.WorkerW = staticWorkerW;
-                        st.Provider.AttachTo(st.WorkerW, st.Bounds);
+                        if (st.Provider != null)
+                        {
+                            try { Win32.SetLayeredWindowAttributes(st.Provider.Handle, 0, 0, Win32.LWA_ALPHA); } catch { }
+                            st.Provider.AttachTo(st.WorkerW, st.Bounds);
+                        }
                     });
 
-                    // 等图片真正加载完成（窗口透明露出旧动态层）。
+                    // 等图片真正加载完成（窗口透明露出旧壁纸层）。
                     // 10s 含 Controller 创建重试（0x8007139F 资源竞争）+ 导航 + 图片加载全过程。
                     if (st.Provider is VideoProvider vpStatic)
                     {
                         bool imgReady = await vpStatic.WaitVideoReadyAsync(TimeSpan.FromSeconds(10));
                         if (!imgReady)
                         {
-                            // 图片未就绪：销毁新静态层，恢复旧壁纸（旧视频窗口仍挂在承载层上），
-                            // 避免"销毁旧层后新层空白"的黑屏/无壁纸状态。
+                            // 图片未就绪：销毁新静态层（全程透明，桌面无黑屏过程），恢复旧壁纸。
                             Logger.Log("[WallpaperManager] 静态层图片未就绪，回退恢复原壁纸");
+                            // 快速路径可能已把旧静态层 img 的 src 原地换成本次失败地址
+                            // （回退后残留"左上角裂图图标"），把旧层内容恢复为原壁纸路径。
+                            if (prevProvider is VideoProvider prevImg && prevImg.IsImageMode &&
+                                !string.IsNullOrEmpty(st.LastPath))
+                            {
+                                var prevPath = st.LastPath;
+                                _ = System.Windows.Application.Current.Dispatcher.InvokeAsync(async () =>
+                                {
+                                    try { await prevImg.NavigateImageAsync(prevPath); }
+                                    catch (Exception ex) { Logger.Log($"[WallpaperManager] 回退恢复旧静态层失败: {ex.Message}"); }
+                                });
+                            }
                             System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
                             {
                                 try { st.Provider?.Dispose(); } catch { }
@@ -605,6 +678,17 @@ namespace DynamicWallpaper.Core
                             status?.Invoke("切换失败：静态图加载未就绪（已保持原壁纸）");
                             return;
                         }
+                        // 就绪：窗口级 alpha 0→255 渐入（约 240ms），替代"直接置 255"的突兀弹出
+                        await Task.Run(async () =>
+                        {
+                            var hwnd = vpStatic.Handle;
+                            const int steps = 8;
+                            for (int i = 1; i <= steps; i++)
+                            {
+                                try { Win32.SetLayeredWindowAttributes(hwnd, 0, (byte)(255 * i / steps), Win32.LWA_ALPHA); } catch { }
+                                await Task.Delay(30);
+                            }
+                        });
                     }
                     if (st.Provider == null) return;
 
@@ -786,6 +870,7 @@ namespace DynamicWallpaper.Core
             }
             finally
             {
+                SwitchOverlay.End(screenIndex);
                 System.Threading.Interlocked.Decrement(ref _opActive);
                 _screenOpLock.Release();
                 RaiseStateChanged();

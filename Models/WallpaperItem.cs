@@ -18,7 +18,17 @@ namespace DynamicWallpaper.Models
     {
         public string Path { get; }
         public string Name => System.IO.Path.GetFileName(Path);
-        public WallpaperType Type { get; }
+        public WallpaperType Type { get; private set; }
+
+        /// <summary>更正条目类型（无扩展名远程直链被按扩展名误判时，以用户本次选择/实测为准）。</summary>
+        public void Retype(WallpaperType type)
+        {
+            if (Type == type) return;
+            Type = type;
+            OnPropertyChanged(nameof(Type));
+            OnPropertyChanged(nameof(TypeLabel));
+            OnPropertyChanged(nameof(MotionLabel));
+        }
         public string TypeLabel => Type switch
         {
             WallpaperType.Video => "视频",
