@@ -34,9 +34,15 @@ namespace DynamicWallpaper.Providers
         /// <summary>壁纸适应方式：fill=铺满裁剪 / fit=完整显示 / center=原始居中。由 WallpaperManager 在切换时注入。</summary>
         public static string FitMode { get; set; } = "fill";
 
+        /// <summary>壁纸旋转角度（实例属性，按壁纸路径独立）：0/90/180/270。由 WallpaperManager 在创建时按路径注入。</summary>
+        public int Rotation { get; set; } = 0;
+
+        private DrawingRectangle _bounds;
+
         public void Show(string path, DrawingRectangle bounds)
         {
             _window = new RenderWindow();
+            _bounds = bounds;
             var stretch = FitMode switch
             {
                 "fit" => Stretch.Uniform,
@@ -49,6 +55,7 @@ namespace DynamicWallpaper.Providers
                 HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
                 VerticalAlignment = System.Windows.VerticalAlignment.Center
             };
+            ApplyRotationLayout(_image, bounds);
             _window.RootGrid.Children.Add(_image);
             _window.SetDeviceBounds(bounds);
             // 不在这里 Show，避免 WorkerW 获取失败时窗口在顶层闪现；
@@ -116,6 +123,39 @@ namespace DynamicWallpaper.Providers
                 "center" => Stretch.None,
                 _ => Stretch.UniformToFill
             };
+        }
+
+        /// <summary>按旋转角度布局：90°/270° 时先按宽高互换的尺寸布局，再由 LayoutTransform 旋转铺满屏幕；180° 仅旋转不互换尺寸。</summary>
+        private void ApplyRotationLayout(Image img, DrawingRectangle bounds)
+        {
+            var r = ((Rotation % 360) + 360) % 360;
+            if (r == 90 || r == 270)
+            {
+                img.Width = bounds.Height;
+                img.Height = bounds.Width;
+                img.LayoutTransform = new System.Windows.Media.RotateTransform(r);
+            }
+            else if (r == 180)
+            {
+                img.Width = bounds.Width;    // 180° 仅旋转不互换尺寸，仍按屏幕尺寸铺满
+                img.Height = bounds.Height;
+                img.LayoutTransform = new System.Windows.Media.RotateTransform(180);
+            }
+            else
+            {
+                // 0° 不旋转：必须按屏幕尺寸铺满（不能留 NaN 自然尺寸），否则从 90/270 设回不旋转时
+                // GIF 会缩回自然尺寸、不再铺满屏幕，表现为"偏移出屏幕"。
+                img.Width = bounds.Width;
+                img.Height = bounds.Height;
+                img.LayoutTransform = null;
+            }
+        }
+
+        /// <summary>运行时切换旋转：立即更新已渲染 GIF 的旋转布局（须在 UI 线程调用）。</summary>
+        public void ApplyRotation()
+        {
+            if (_image == null || _window == null) return;
+            ApplyRotationLayout(_image, _bounds);
         }
 
         public void Play()

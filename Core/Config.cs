@@ -20,11 +20,27 @@ namespace DynamicWallpaper.Core
         /// <summary>壁纸适应方式：fill=铺满裁剪 / fit=完整显示 / center=原始居中。默认 fill（保持旧版行为）。</summary>
         public string WallpaperFit { get; set; } = "fill";
 
+        /// <summary>每壁纸旋转角度（按文件完整路径小写做键）：0/90/180/270。右键菜单“旋转”时累加写入，
+        /// 仅在对应壁纸被设置为桌面壁纸时生效（作用于正在显示该壁纸的屏幕）。默认无旋转。</summary>
+        public Dictionary<string, int> WallpaperRotations { get; set; } = new();
+
         /// <summary>是否启用周期性自动清理过期缓存（缩略图/悬停预览）。默认关闭，由用户在设置中开启。</summary>
         public bool AutoCleanCache { get; set; } = false;
 
         /// <summary>自动清理的保留天数：超过该天数的缓存文件会被删除。默认 30 天。</summary>
         public int CacheRetentionDays { get; set; } = 30;
+
+        /// <summary>是否启用壁纸轮播（按间隔自动切换「已设置壁纸的屏幕」）。默认关闭。</summary>
+        public bool CarouselEnabled { get; set; } = false;
+
+        /// <summary>轮播切换间隔（分钟），1~1440。默认 15 分钟。</summary>
+        public int CarouselIntervalMinutes { get; set; } = 15;
+
+        /// <summary>轮播顺序：sequential=按库顺序循环，random=随机不重复。默认顺序。</summary>
+        public string CarouselOrder { get; set; } = "sequential";
+
+        /// <summary>轮播图片来源文件夹列表：用户自选，轮播时自动播放这些文件夹里的图片/视频。默认空（需在设置中添加）。</summary>
+        public List<string> CarouselFolders { get; set; } = new();
 
         public List<string> Library { get; set; } = new();
 

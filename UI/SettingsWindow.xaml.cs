@@ -1,5 +1,7 @@
+using System.Collections.ObjectModel;
 using System.Windows;
 using System.Windows.Controls;
+using Microsoft.Win32;
 using DynamicWallpaper.Core;
 
 namespace DynamicWallpaper.UI
@@ -16,6 +18,9 @@ namespace DynamicWallpaper.UI
             _config = config;
             _manager = manager;
             InitializeComponent();
+
+            // 兜底：窗口高度不超过屏幕工作区（正常内容自适应撑开，不会出现滚动条）
+            MaxHeight = SystemParameters.WorkArea.Height;
 
             MuteBox.IsChecked = _config.Mute;
             FsBox.IsChecked = _config.PauseOnFullscreen;

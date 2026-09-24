@@ -184,6 +184,17 @@ namespace DynamicWallpaper.Desktop
             dw.SetWallpaper("", wallpaperPath);
         }
 
+        /// <summary>通过 IDesktopWallpaper 设置系统壁纸并指定适应方式位置。
+        /// position 取值（DESKTOP_WALLPAPER_POSITION）：0=Center / 1=Tile / 2=Stretch / 3=Fit / 4=Fill / 5=Span。
+        /// 旋转后的壁纸在系统 API 降级路径下也据此沿用 App 的适应方式，而非系统默认 Fill。</summary>
+        public static void SetDesktopWallpaper(string wallpaperPath, int position)
+        {
+            var dw = (IDesktopWallpaper)new DesktopWallpaper();
+            dw.SetWallpaper("", wallpaperPath);
+            try { dw.SetPosition("", position); }
+            catch { /* 个别系统/接口实现不支持 SetPosition，忽略后由 SPI 回退兜底 */ }
+        }
+
         [StructLayout(LayoutKind.Sequential)]
         public struct RECT
         {

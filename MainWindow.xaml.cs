@@ -32,6 +32,9 @@ namespace DynamicWallpaper
         private readonly WallpaperManager _manager;
         private readonly DownloadHistory _downloadHistory;
         public ObservableCollection<WallpaperItem> Library { get; } = new();
+
+        /// <summary>幻灯片页卡片集合：文件夹（SlideshowFolderItem）+ 末尾常驻的添加文件夹占位卡（SlideshowAddItem）。</summary>
+        public ObservableCollection<object> SlideshowItems { get; } = new();
         // 三个在线来源各自维护独立集合，切页签时互不清空，避免下载状态丢失/重复下载
         public ObservableCollection<OnlineWallpaperItem> NetbianWallpapers { get; } = new();
         public ObservableCollection<OnlineWallpaperItem> GBizhiWallpapers { get; } = new();
@@ -135,6 +138,18 @@ namespace DynamicWallpaper
             NetbianScroll.SizeChanged += GridScroll_SizeChanged;
             GBizhiScroll.SizeChanged += GridScroll_SizeChanged;
             DynamicScroll.SizeChanged += GridScroll_SizeChanged;
+            SlideshowScroll.SizeChanged += GridScroll_SizeChanged;
+            // 幻灯片页支持把文件夹直接拖入页面添加（仅文件夹；普通文件仍走窗口级入库逻辑）
+            SlideshowScroll.AllowDrop = true;
+            SlideshowScroll.DragOver += SlideshowDragOver;
+            SlideshowScroll.Drop += SlideshowDrop;
+            RefreshSlideshowTab();
+            // 切换间隔显示默认/已存数字；顺序单选按配置回显
+            SlideshowIntervalBox.Text = _config.CarouselIntervalMinutes.ToString();
+            if (string.Equals(_config.CarouselOrder, "random", StringComparison.OrdinalIgnoreCase))
+                SlideshowOrderRand.IsChecked = true;
+            else
+                SlideshowOrderSeq.IsChecked = true;
             Loaded += (_, _) => { Logger.Log("[MainWindow] Loaded 已触发"); UpdateCardWidth(NetbianScroll); };
             Logger.Log("[MainWindow] 构造完成");
         }
@@ -758,6 +773,220 @@ namespace DynamicWallpaper
             SetStatusText(StatusSummary());
         }
 
+        // ---------- 幻灯片（文件夹轮播） ----------
+        /// <summary>幻灯片页支持的媒体扩展名（与轮播一致：图片 + GIF + 常见视频）。</summary>
+        private static readonly string[] SlideshowExts =
+        {
+            ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp",
+            ".mp4", ".webm", ".mov", ".mkv", ".avi"
+        };
+
+        /// <summary>刷新幻灯片页：每个已添加文件夹以一张封面卡展示（图库视图），
+        /// 「添加文件夹」占位卡固定在集合末尾不消失，方便继续追加文件夹。</summary>
+        private void RefreshSlideshowTab()
+        {
+            SlideshowItems.Clear();
+            int folderCount = 0;
+            foreach (var folder in _config.CarouselFolders)
+            {
+                if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder)) continue;
+                SlideshowItems.Add(new SlideshowFolderItem(folder));
+                folderCount++;
+            }
+            SlideshowItems.Add(new SlideshowAddItem());
+            if (SlideshowCountText != null)
+                SlideshowCountText.Text = $"共 {folderCount} 个文件夹";
+            SlideshowEmptyHint.Visibility = folderCount == 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        /// <summary>占位卡 / 添加按钮：选择文件夹加入轮播并刷新卡片。</summary>
+        private void SlideshowAddFolder_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new Microsoft.Win32.OpenFolderDialog { Title = "选择幻灯片文件夹" };
+            if (dlg.ShowDialog() != true) return;
+            var folder = dlg.FolderName;
+            if (_config.CarouselFolders.Contains(folder))
+            {
+                SetStatusText("该文件夹已在幻灯片中");
+                return;
+            }
+            _config.CarouselFolders.Add(folder);
+            _config.Save();
+            Logger.Log($"[幻灯片] 添加文件夹：{folder}");
+            RefreshSlideshowTab();
+            SetStatusText($"已添加幻灯片文件夹：{folder}");
+        }
+
+        // ---------- 幻灯片（文件夹图库） ----------
+
+        /// <summary>文件夹卡片「设为壁纸」：把该文件夹加入轮播并立即应用首张媒体，之后按间隔自动轮播。</summary>
+        private async void SlideshowSetWallpaper_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is System.Windows.Controls.Button btn) btn.IsEnabled = false;
+            try
+            {
+                var fi = (sender as FrameworkElement)?.DataContext as SlideshowFolderItem;
+                if (fi == null) return;
+                await SetFolderWallpaperAsync(fi, SelectedScreen());
+            }
+            finally
+            {
+                if (sender is System.Windows.Controls.Button btn2) btn2.IsEnabled = true;
+            }
+        }
+
+        /// <summary>文件夹卡片「解除」：只停止该文件夹在桌面上的壁纸并清除其应用状态，
+        /// 但保留文件夹卡片（不删 CarouselFolders），用户无需重新添加文件夹即可再次设为壁纸。</summary>
+        private async void SlideshowClear_Click(object sender, RoutedEventArgs e)
+        {
+            var fi = (sender as FrameworkElement)?.DataContext as SlideshowFolderItem;
+            if (fi == null) return;
+
+            // 找出当前正由该文件夹提供壁纸的屏幕，真正清空桌面壁纸
+            var affected = _config.Assignments
+                .Where(a => a.Path != null &&
+                    string.Equals(Path.GetDirectoryName(a.Path), fi.Folder, StringComparison.OrdinalIgnoreCase))
+                .Select(a => a.Index)
+                .Distinct()
+                .ToList();
+            foreach (var idx in affected)
+            {
+                try { await _manager.ClearScreenAsync(idx); }
+                catch (Exception ex) { Logger.Log($"[幻灯片] 解除清屏失败 屏{idx}: {ex.Message}"); }
+            }
+
+            // 从配置移除该文件夹的壁纸分配（ClearScreenAsync 已回写，这里再保险清理一次）
+            _config.Assignments.RemoveAll(a => a.Path != null &&
+                string.Equals(Path.GetDirectoryName(a.Path), fi.Folder, StringComparison.OrdinalIgnoreCase));
+
+            // 若已无任何屏幕在使用轮播则停用；其他文件夹仍在用则保留开关
+            if (_config.Assignments.Count == 0) _config.CarouselEnabled = false;
+            _config.Save();
+            _manager.ApplyCarouselSettings();
+
+            // 保留文件夹卡片：不移除 CarouselFolders，仅刷新应用徽标让按钮回到「设为壁纸」
+            RefreshSlideshowTab();
+            RefreshActiveBadges();
+            SetStatusText($"已解除：{fi.Name}（文件夹已保留，可再次设为壁纸）");
+        }
+
+        /// <summary>把文件夹设为壁纸：确保进入轮播列表并开启轮播，再应用首张媒体（轮播随后接管）。</summary>
+        private async Task SetFolderWallpaperAsync(SlideshowFolderItem fi, int targetScreen)
+        {
+            var first = FirstMediaInFolder(fi.Folder);
+            if (first == null) { SetStatusText("该文件夹没有可用的图片/视频"); return; }
+
+            if (!_config.CarouselFolders.Contains(fi.Folder, StringComparer.OrdinalIgnoreCase))
+                _config.CarouselFolders.Add(fi.Folder);
+            if (!_config.CarouselEnabled) _config.CarouselEnabled = true;
+            _config.Save();
+            _manager.ApplyCarouselSettings();
+
+            var wi = new WallpaperItem(first, ProviderFactory.DetectType(first));
+            await ApplyItemAsync(wi, targetScreen);
+            RefreshSlideshowTab(); // 刷新已应用徽标
+        }
+
+        /// <summary>取文件夹内第一张可用媒体（图片/视频，不含子文件夹）；无则返回 null。</summary>
+        private static string? FirstMediaInFolder(string folder)
+        {
+            try
+            {
+                foreach (var f in Directory.EnumerateFiles(folder))
+                {
+                    var ext = Path.GetExtension(f);
+                    if (ext.Length > 0 && SlideshowExts.Contains(ext, StringComparer.OrdinalIgnoreCase)) return f;
+                }
+            }
+            catch { /* 扫描失败：视为无 */ }
+            return null;
+        }
+
+        /// <summary>幻灯片卡片右键菜单：设为壁纸到指定屏 / 打开文件夹 / 移除该文件夹（不删磁盘文件）。</summary>
+        private void SlideshowCard_RightClick(object sender, MouseButtonEventArgs e)
+        {
+            var border = sender as Border;
+            var fi = border?.DataContext as SlideshowFolderItem;
+            if (fi == null) return;
+
+            var menu = new ContextMenu { PlacementTarget = border, Placement = PlacementMode.MousePoint };
+            var setMenu = new MenuItem { Header = "设为壁纸到" };
+            foreach (var sc in ScreenManager.GetScreens())
+            {
+                int idx = sc.Index;
+                var mi = new MenuItem { Header = sc.DisplayName };
+                mi.Click += async (_, _) => await SetFolderWallpaperAsync(fi, idx);
+                setMenu.Items.Add(mi);
+            }
+            if (ScreenManager.GetScreens().Count > 1)
+            {
+                var miAll = new MenuItem { Header = "所有屏幕" };
+                miAll.Click += async (_, _) => await SetFolderWallpaperAsync(fi, -1);
+                setMenu.Items.Add(miAll);
+            }
+            var openFolder = new MenuItem { Header = "打开文件夹" };
+            openFolder.Click += (_, _) =>
+            {
+                try { Process.Start("explorer.exe", $"\"{fi.Folder}\""); }
+                catch (Exception ex) { Logger.Log($"[幻灯片] 打开文件夹失败: {ex.Message}"); }
+            };
+
+            // 只把文件夹从幻灯片移除，绝不删除用户磁盘上的原文件
+            var removeFolder = new MenuItem { Header = "从幻灯片移除该文件夹" };
+            removeFolder.Click += (_, _) => RemoveSlideshowFolder(fi.Folder);
+
+            menu.Items.Add(setMenu);
+            menu.Items.Add(openFolder);
+            menu.Items.Add(removeFolder);
+            menu.Items.Add(BuildRotationSubMenuForFolder(fi.Folder));
+            menu.IsOpen = true;
+            e.Handled = true;
+        }
+
+        /// <summary>把文件夹从幻灯片（轮播文件夹列表）移除，并停止其轮播；不影响磁盘文件。</summary>
+        private void RemoveSlideshowFolder(string folder)
+        {
+            var match = _config.CarouselFolders.FirstOrDefault(f => string.Equals(f, folder, StringComparison.OrdinalIgnoreCase));
+            if (match == null) return;
+            _config.CarouselFolders.Remove(match);
+            if (_config.CarouselFolders.Count == 0) _config.CarouselEnabled = false;
+            _config.Save();
+            _manager.ApplyCarouselSettings();
+            Logger.Log($"[幻灯片] 移除文件夹：{match}");
+            RefreshSlideshowTab();
+            RefreshActiveBadges();
+            SetStatusText($"已移除幻灯片文件夹：{match}");
+        }
+
+        /// <summary>幻灯片页切换间隔（分钟）变更：即时生效。若已添加文件夹则自动开启轮播，
+        /// 避免“只改了间隔却没点设为壁纸”导致轮播未启动的困惑。</summary>
+        private void SlideshowInterval_Changed(object sender, TextChangedEventArgs e)
+        {
+            if (int.TryParse(SlideshowIntervalBox.Text, out var m) && m > 0)
+            {
+                _config.CarouselIntervalMinutes = Math.Min(m, 1440);
+                _config.Save();
+                _manager.ApplyCarouselSettings();
+                SetStatusText($"轮播间隔已设为 {_config.CarouselIntervalMinutes} 分钟" +
+                              (_config.CarouselEnabled ? "（已启用）" : "（未启用：需在该文件夹点“设为壁纸”才会开始轮播）"));
+            }
+        }
+
+        /// <summary>幻灯片页播放顺序（顺序/随机）变更：即时生效。若已添加文件夹则自动开启轮播。</summary>
+        private void SlideshowOrder_Changed(object sender, RoutedEventArgs e)
+        {
+            _config.CarouselOrder = SlideshowOrderRand.IsChecked == true ? "random" : "sequential";
+            _config.Save();
+            _manager.ApplyCarouselSettings();
+        }
+
+        /// <summary>仅允许输入数字（间隔输入框）。</summary>
+        private void NumberOnly_Preview(object sender, System.Windows.Input.TextCompositionEventArgs e)
+        {
+            foreach (var c in e.Text)
+                if (!char.IsDigit(c)) { e.Handled = true; break; }
+        }
+
         private void Card_RightClick(object sender, MouseButtonEventArgs e)
         {
             var border = sender as Border;
@@ -784,7 +1013,7 @@ namespace DynamicWallpaper
 
             menu.Items.Add(setMenu);
             // 网络壁纸（URL）：提供"打开网址"用默认浏览器打开当前网页地址；
-            // 本地壁纸：提供"打开壁纸位置"。
+            // 本地壁纸：提供"打开壁纸位置"与"从本地删除"。
             if (IsWebUrl(item.Path))
             {
                 var openUrl = new MenuItem { Header = "打开网址" };
@@ -796,16 +1025,48 @@ namespace DynamicWallpaper
                 var openLocation = new MenuItem { Header = "打开壁纸位置" };
                 openLocation.Click += (_, _) => OpenWallpaperLocation(item);
                 menu.Items.Add(openLocation);
-            }
-            menu.Items.Add(remove);
-            if (!IsWebUrl(item.Path))
-            {
                 var deleteLocal = new MenuItem { Header = "从本地删除壁纸" };
                 deleteLocal.Click += (_, _) => DeleteWallpaperLocal(item);
                 menu.Items.Add(deleteLocal);
             }
+            menu.Items.Add(remove);
+            // 单壁纸旋转：本地壁纸与网页壁纸均支持（网页壁纸为整页旋转），按该壁纸路径独立记录角度（>=360 归零）
+            menu.Items.Add(BuildRotationSubMenu(item.Path));
             menu.IsOpen = true;
             e.Handled = true;
+        }
+
+        /// <summary>构造“旋转”二级菜单（不旋转/顺时针/逆时针），按壁纸路径独立记录旋转角度，单次 90° 可叠加，>=360 归零。</summary>
+        private MenuItem BuildRotationSubMenu(string path)
+        {
+            int rot = _manager.GetRotation(path);
+            var sub = new MenuItem { Header = "旋转" };
+            var none = new MenuItem { Header = "不旋转", IsCheckable = true, IsChecked = rot == 0 };
+            none.Click += (_, _) => { _manager.RotateWallpaper(path, 0); SetStatusText("旋转已重置：不旋转"); };
+            var cw = new MenuItem { Header = "顺时针旋转 90°", IsCheckable = true, IsChecked = rot == 90 };
+            cw.Click += (_, _) => { int n = _manager.RotateWallpaper(path, 90); SetStatusText(n > 0 ? $"已旋转至 {_manager.GetRotation(path)}°（作用 {n} 屏）" : "该壁纸当前未显示，已记录角度"); };
+            var ccw = new MenuItem { Header = "逆时针旋转 90°", IsCheckable = true, IsChecked = rot == 270 };
+            ccw.Click += (_, _) => { int n = _manager.RotateWallpaper(path, -90); SetStatusText(n > 0 ? $"已旋转至 {_manager.GetRotation(path)}°（作用 {n} 屏）" : "该壁纸当前未显示，已记录角度"); };
+            sub.Items.Add(none);
+            sub.Items.Add(cw);
+            sub.Items.Add(ccw);
+            return sub;
+        }
+
+        /// <summary>幻灯片文件夹的“旋转”二级菜单：旋转该文件夹当前正在显示的壁纸。</summary>
+        private MenuItem BuildRotationSubMenuForFolder(string folder)
+        {
+            var sub = new MenuItem { Header = "旋转" };
+            var none = new MenuItem { Header = "不旋转" };
+            none.Click += (_, _) => { int n = _manager.RotateWallpaperByFolder(folder, 0); SetStatusText(n > 0 ? "旋转已重置：不旋转" : "该文件夹壁纸当前未显示"); };
+            var cw = new MenuItem { Header = "顺时针旋转 90°" };
+            cw.Click += (_, _) => { int n = _manager.RotateWallpaperByFolder(folder, 90); SetStatusText(n > 0 ? "已旋转该文件夹壁纸" : "该文件夹壁纸当前未显示"); };
+            var ccw = new MenuItem { Header = "逆时针旋转 90°" };
+            ccw.Click += (_, _) => { int n = _manager.RotateWallpaperByFolder(folder, -90); SetStatusText(n > 0 ? "已旋转该文件夹壁纸" : "该文件夹壁纸当前未显示"); };
+            sub.Items.Add(none);
+            sub.Items.Add(cw);
+            sub.Items.Add(ccw);
+            return sub;
         }
 
         private async void RemoveItem(WallpaperItem item)
@@ -945,6 +1206,18 @@ namespace DynamicWallpaper
                 bool active = map.TryGetValue(it.Path, out var ls);
                 it.IsActive = active;
                 it.ActiveScreens = active ? string.Join(" · ", ls!) : "";
+            }
+
+            // 幻灯片页（文件夹卡）应用状态同步：当前有屏幕正在显示该文件夹内的壁纸即视为已应用
+            foreach (var it in SlideshowItems.OfType<SlideshowFolderItem>())
+            {
+                var screens = map
+                    .Where(kv => kv.Key != null && string.Equals(Path.GetDirectoryName(kv.Key), it.Folder, StringComparison.OrdinalIgnoreCase))
+                    .SelectMany(kv => kv.Value)
+                    .Distinct()
+                    .ToList();
+                it.IsActive = screens.Count > 0;
+                it.ActiveScreens = it.IsActive ? string.Join(" · ", screens) : "";
             }
 
             // 同步在线壁纸列表的应用状态（按钮"设为桌面 ↔ 解除壁纸"）。
@@ -1130,6 +1403,12 @@ namespace DynamicWallpaper
                     await LoadDynamicAsync(true);
                     DynamicScroll.ScrollToTop();
                 }, System.Windows.Threading.DispatcherPriority.Background);
+            }
+            else if (header == "幻灯片")
+            {
+                // 每次切到幻灯片页都重扫文件夹：文件夹里新增/删除的文件立即反映到卡片
+                RefreshSlideshowTab();
+                SlideshowScroll.ScrollToTop();
             }
         }
 
@@ -1622,8 +1901,79 @@ namespace DynamicWallpaper
         private async void OnDrop(object sender, DragEventArgs e)
         {
             if (e.Data.GetData(DataFormats.FileDrop) is string[] files)
+            {
+                // 幻灯片页兜底：页面空白区命中不到 SlideshowScroll 时 Drop 会落到窗口级。
+                // 此时若拖入的是文件夹且当前在幻灯片页，直接走添加文件夹逻辑（AddPathAsync 对文件夹是静默忽略的）。
+                var folders = files.Where(Directory.Exists).ToArray();
+                if (folders.Length > 0 && IsSlideshowTabActive())
+                {
+                    AddSlideshowFolders(folders);
+                    e.Handled = true;
+                    return;
+                }
                 foreach (var f in files) await AddPathAsync(f);
+            }
             e.Handled = true;
+        }
+
+        private bool IsSlideshowTabActive()
+            => MainTabs?.SelectedItem is System.Windows.Controls.TabItem ti && ti.Header as string == "幻灯片";
+
+        // ---------- 幻灯片页：拖拽文件夹添加 ----------
+
+        /// <summary>幻灯片页 DragOver：拖入内容包含文件夹时显示可放置（Copy）；
+        /// 纯文件/网址不拦截，交由窗口级 OnDragOver 决定。</summary>
+        private void SlideshowDragOver(object sender, DragEventArgs e)
+        {
+            if (e.Data.GetDataPresent(DataFormats.FileDrop) &&
+                e.Data.GetData(DataFormats.FileDrop) is string[] paths &&
+                paths.Any(Directory.Exists))
+            {
+                e.Effects = DragDropEffects.Copy;
+                e.Handled = true;
+            }
+        }
+
+        /// <summary>幻灯片页 Drop：拖入的文件夹加入轮播列表；混合拖入时仅取文件夹部分。
+        /// 标记 Handled 后不再触发窗口级 OnDrop，避免文件夹被误当壁纸加入图库。
+        /// 拖入普通文件时不拦截，仍走窗口级入库逻辑。</summary>
+        private void SlideshowDrop(object sender, DragEventArgs e)
+        {
+            if (e.Data.GetData(DataFormats.FileDrop) is string[] paths)
+            {
+                var folders = paths.Where(Directory.Exists).ToList();
+                if (folders.Count > 0)
+                {
+                    AddSlideshowFolders(folders.ToArray());
+                    e.Handled = true;
+                    return;
+                }
+            }
+        }
+
+        /// <summary>把拖入的文件夹加入轮播列表（去重，大小写不敏感），保存配置并刷新卡片与状态栏。</summary>
+        private void AddSlideshowFolders(string[] folders)
+        {
+            int added = 0, skipped = 0;
+            foreach (var folder in folders)
+            {
+                if (_config.CarouselFolders.Contains(folder, StringComparer.OrdinalIgnoreCase))
+                {
+                    skipped++;
+                    continue;
+                }
+                _config.CarouselFolders.Add(folder);
+                added++;
+                Logger.Log($"[幻灯片] 拖拽添加文件夹：{folder}");
+            }
+            if (added > 0)
+            {
+                _config.Save();
+                RefreshSlideshowTab();
+            }
+            SetStatusText(added > 0
+                ? $"已添加 {added} 个幻灯片文件夹" + (skipped > 0 ? $"（{skipped} 个已存在跳过）" : "")
+                : "拖入的文件夹均已在幻灯片中");
         }
     }
 }

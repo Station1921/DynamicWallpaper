@@ -134,6 +134,21 @@ namespace DynamicWallpaper.Providers
         /// <summary>壁纸适应方式：fill=铺满裁剪 / fit=完整显示 / center=原始居中。由 WallpaperManager 在切换时注入。</summary>
         public static string FitMode { get; set; } = "fill";
 
+        /// <summary>壁纸旋转角度（实例属性，按壁纸路径独立）：0=不旋转，90=顺时针90°，180=180°，270=逆时针90°。由 WallpaperManager 在创建时按路径注入（仅图片模式生效）。</summary>
+        public int Rotation { get; set; } = 0;
+
+        /// <summary>把旋转映射为 img 的定位/尺寸/transform CSS：90°/270° 时先按宽高互换的尺寸
+        /// （宽=100vh、高=100vw）布局，再以中心为轴旋转，铺满屏幕无黑边；180° 仅以中心旋转不互换尺寸。</summary>
+        private string BuildImageRotationCss()
+        {
+            var r = ((Rotation % 360) + 360) % 360;
+            if (r == 90 || r == 270)
+                return $"left:50%;top:50%;width:100vh;height:100vw;transform:translate(-50%,-50%) rotate({r}deg);";
+            if (r == 180)
+                return "inset:0;width:100vw;height:100vh;transform:rotate(180deg);";
+            return "inset:0;width:100vw;height:100vh;";
+        }
+
         /// <summary>把 FitMode 映射为 HTML video 的 object-fit / object-position CSS。</summary>
         private static string BuildVideoFitCss()
         {
@@ -190,7 +205,10 @@ namespace DynamicWallpaper.Providers
         {
             _path = path;
             var ctrl = _controller;
-            if (ctrl == null || ctrl.CoreWebView2 == null)
+            // 只判 _controller 引用：CoreWebView2 属性是 COM 跨线程访问，非创建线程调用会抛
+            // "Unable to cast COM object ... ICoreWebView2Controller"（Controller 创建成功后
+            // CoreWebView2 必非 null，判 _controller 即可）。真正的 COM 调用都在 UI 线程执行。
+            if (ctrl == null)
             {
                 // 冷启动兜底：Controller 尚未就绪时走完整 Show 流程（正常切换路径不会触发）
                 Show(path, _bounds);
@@ -219,7 +237,7 @@ namespace DynamicWallpaper.Providers
                     $"if(i){{i.src='{src}';}}" +
                     $"else{{var n=document.createElement('img');n.id='i';" +
                     // 背景先置透明：加载期间露出下方 video，绝不出现黑屏
-                    $"n.style.cssText='position:fixed;inset:0;width:100vw;height:100vh;{css};background:transparent';" +
+                    $"n.style.cssText='position:fixed;{BuildImageRotationCss()}{css};background:transparent';" +
                     // onload：暂停并隐藏 video（立即停声），显示静态图，恢复按适应方式需要的背景
                     $"n.onload=function(){{window.__dwpImgState='ok';var vv=document.getElementById('v');if(vv){{vv.pause();vv.style.display='none';}}this.style.background='{bgOnLoad}';}};" +
                     // onerror：移除 img、恢复 video 显示与播放，失败不残留黑屏不卡死
@@ -243,6 +261,8 @@ namespace DynamicWallpaper.Providers
             await WaitNavAndRunAsync(
                 "var i=document.getElementById('i');if(i){i.remove();}" +
                 "var v=document.getElementById('v');if(v){v.style.display='';v.play();}");
+            // 恢复视频的旋转 CSS：图片覆盖期间若旋转角度有变，video 的内联样式仍是旧值
+            ApplyRotation();
         }
 
         public void Show(string path, Rectangle bounds)
@@ -297,6 +317,26 @@ namespace DynamicWallpaper.Providers
             RunJs($"var {elem}=document.getElementById('{elem}');if({elem}){{{elem}.style.objectFit='{css.Split(';')[0].Split(':')[1].Trim()}';{elem}.style.objectPosition='{(FitMode == "center" ? "center center" : "50% 50%")}';}}");
         }
 
+        /// <summary>运行时切换旋转：立即按新角度重写 img / video 的定位/尺寸/transform CSS。
+        /// 图片与视频统一处理：90°/270° 时宽高互换（宽=100vh、高=100vw）再以中心旋转，
+        /// 180° 仅中心旋转，0° 恢复铺满。适应方式（object-fit）始终跟随设置里的 FitMode。</summary>
+        public void ApplyRotation()
+        {
+            var rot = BuildImageRotationCss();
+            var fit = BuildVideoFitCss();
+            var bg = FitMode == "center" ? "transparent" : "#000";
+            if (_isImage)
+            {
+                Logger.Log($"[VideoProvider] ApplyRotation 应用旋转：{Rotation}°（img 模式）");
+                RunJs($"var i=document.getElementById('i');if(i){{i.style.cssText='position:fixed;{rot}{fit};background:{bg};';}}");
+            }
+            else
+            {
+                Logger.Log($"[VideoProvider] ApplyRotation 应用旋转：{Rotation}°（video 模式）");
+                RunJs($"var v=document.getElementById('v');if(v){{v.style.cssText='position:fixed;{rot}{fit};';}}");
+            }
+        }
+
         public void SetMuted(bool muted)
         {
             if (_isImage) return; // 静态图片无声音概念
@@ -325,7 +365,11 @@ namespace DynamicWallpaper.Providers
                 if (_disposed) return false;
                 var ctrl = _controller;
                 var tcs = _navTcs;
-                if (ctrl == null || ctrl.CoreWebView2 == null || tcs == null || !tcs.Task.IsCompleted)
+                // 注意：这里不能访问 ctrl.CoreWebView2——该属性是 COM 对象上的跨线程调用，
+                // 在非创建线程（如轮播定时器线程）会抛 "Unable to cast COM object ...
+                // ICoreWebView2Controller"。只判 _controller/_navTcs 引用（普通字段读取安全），
+                // 真正的 CoreWebView2 访问统一在下方 RunOnUiThreadAsync 内（已调度回创建线程）。
+                if (ctrl == null || tcs == null || !tcs.Task.IsCompleted)
                 {
                     // Controller / 导航信号尚未就绪（异步初始化中，可能含失败重试），继续等待
                     await Task.Delay(100);
@@ -503,14 +547,14 @@ namespace DynamicWallpaper.Providers
                 {
                     // 静态图片模式：本地文件走虚拟主机，远程 URL 直接加载。
                     // 窗口背景透明，图片加载完成前露出下层（旧动态层），就绪后无缝直切。
-                    html = $"<html><head><style>html,body{{margin:0;padding:0;overflow:hidden}}img{{position:fixed;inset:0;width:100vw;height:100vh;{BuildVideoFitCss()}}}</style></head><body><img id='i' src='{mediaSrc}'></body></html>";
+                    html = $"<html><head><style>html,body{{margin:0;padding:0;overflow:hidden}}img{{position:fixed;{BuildImageRotationCss()}{BuildVideoFitCss()}}}</style></head><body><img id='i' src='{mediaSrc}'></body></html>";
                 }
                 else
                 {
                     string mutedJs = _muted ? "true" : "false";
                     // 注意：不注册 canplay 自动 play——Pause() 暂停后若触发 canplay 事件会被误恢复播放
                     // （全屏暂停失效的隐患之一）；播放由 autoplay + loadedmetadata 保证。
-                    html = $"<html><head><style>html,body{{margin:0;padding:0;overflow:hidden}}video{{position:fixed;inset:0;width:100vw;height:100vh;{BuildVideoFitCss()}}}</style></head><body><video id='v' src='{mediaSrc}' autoplay muted loop playsinline></video><script>var v=document.getElementById('v');v.addEventListener('loadedmetadata',function(){{v.muted={mutedJs};v.volume={(_muted ? 0 : 1)};v.play();}});</script></body></html>";
+                    html = $"<html><head><style>html,body{{margin:0;padding:0;overflow:hidden}}video{{position:fixed;{BuildImageRotationCss()}{BuildVideoFitCss()}}}</style></head><body><video id='v' src='{mediaSrc}' autoplay muted loop playsinline></video><script>var v=document.getElementById('v');v.addEventListener('loadedmetadata',function(){{v.muted={mutedJs};v.volume={(_muted ? 0 : 1)};v.play();}});</script></body></html>";
                 }
 
                 // 导航完成信号：ExecuteScriptAsync 需在导航完成后调用（此前会抛 COM 异常），

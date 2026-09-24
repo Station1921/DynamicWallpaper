@@ -35,6 +35,11 @@ namespace DynamicWallpaper.Providers
         /// <summary>壁纸适应方式：fill=铺满裁剪 / fit=完整显示 / center=原始居中。由 WallpaperManager 在切换时注入。</summary>
         public static string FitMode { get; set; } = "fill";
 
+        /// <summary>壁纸旋转角度（实例属性，按壁纸路径独立）：0/90/180/270。由 WallpaperManager 在创建时按路径注入。</summary>
+        public int Rotation { get; set; } = 0;
+
+        private System.Drawing.Rectangle _bounds;
+
         /// <summary>把 FitMode 映射为 WPF Image Stretch / StretchDirection。</summary>
         private static (Stretch Stretch, StretchDirection Direction) BuildImageStretch()
         {
@@ -59,6 +64,7 @@ namespace DynamicWallpaper.Providers
         public void Show(string path, Rectangle bounds)
         {
             _path = path;
+            _bounds = bounds;
 
             if (_window == null)
             {
@@ -76,6 +82,7 @@ namespace DynamicWallpaper.Providers
                 };
                 _window.RootGrid.Children.Add(_image);
                 _window.SetDeviceBounds(bounds);
+                ApplyRotationLayout(_image!, bounds);
             }
             else
             {
@@ -138,6 +145,37 @@ namespace DynamicWallpaper.Providers
             var (stretch, direction) = BuildImageStretch();
             _image.Stretch = stretch;
             _image.StretchDirection = direction;
+        }
+
+        /// <summary>按旋转角度布局：90°/270° 时先按宽高互换的尺寸布局，再由 LayoutTransform 旋转铺满屏幕；180° 仅旋转不互换尺寸。</summary>
+        private void ApplyRotationLayout(Image img, Rectangle bounds)
+        {
+            var r = ((Rotation % 360) + 360) % 360;
+            if (r == 90 || r == 270)
+            {
+                img.Width = bounds.Height;
+                img.Height = bounds.Width;
+                img.LayoutTransform = new System.Windows.Media.RotateTransform(r);
+            }
+            else if (r == 180)
+            {
+                img.Width = double.NaN;
+                img.Height = double.NaN;
+                img.LayoutTransform = new System.Windows.Media.RotateTransform(180);
+            }
+            else
+            {
+                img.Width = double.NaN;
+                img.Height = double.NaN;
+                img.LayoutTransform = null;
+            }
+        }
+
+        /// <summary>运行时切换旋转：立即更新已渲染图片的旋转布局（须在 UI 线程调用）。</summary>
+        public void ApplyRotation()
+        {
+            if (_image == null || _window == null) return;
+            ApplyRotationLayout(_image, _bounds);
         }
 
         public void Play() { }

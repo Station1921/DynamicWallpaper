@@ -47,6 +47,15 @@ namespace DynamicWallpaper.Core
 
         private bool _userPaused;
 
+        /// <summary>正在执行中的设置/清除/停止操作计数（含排队等待锁的）。
+        /// 轮播据此避让：用户手动操作进行中时，轮播本轮直接跳过，避免打断手动切换。</summary>
+        private int _opActive;
+        /// <summary>是否有壁纸操作正在执行（供轮播避让判断）。</summary>
+        public bool IsBusy => System.Threading.Volatile.Read(ref _opActive) > 0;
+
+        /// <summary>壁纸轮播服务：按间隔自动切换已设置壁纸的屏幕（复用 SetWallpaperAsync）。</summary>
+        private readonly WallpaperCarousel _carousel;
+
         /// <summary>每屏复用的静态壁纸 WebView2 层（窗口+Controller 仅创建一次，切换静态图仅重新导航，
         /// 消除每次 dynamic→static 都重建 WebView2 的 ~500ms 延迟）。非静态屏时隐藏保活，下次即时复用。</summary>
         private readonly Dictionary<int, StaticFadeProvider> _reusableStatic = new();
@@ -74,7 +83,60 @@ namespace DynamicWallpaper.Core
             _power = new PowerManager();
             _power.BatteryChanged += _ => ApplyPlayState();
             _watchdog.Elapsed += WatchdogTick;
+            _carousel = new WallpaperCarousel(
+                _config,
+                GetCarouselScreens,
+                CarouselApplyAsync,
+                ShouldSkipCarousel);
         }
+
+        /// <summary>收集当前「已设置壁纸」的屏幕（轮播只在这些屏之间切换）。</summary>
+        private IReadOnlyList<WallpaperCarousel.CarouselScreen> GetCarouselScreens()
+        {
+            try
+            {
+                var list = _states.Values
+                    .Where(s => s.Provider != null || s.IsStaticImage)
+                    .Select(s => new WallpaperCarousel.CarouselScreen { Index = s.Index, CurrentPath = s.LastPath })
+                    .ToList();
+                Logger.Log($"[Carousel] 收集轮播屏幕：{list.Count}/{_states.Count} 屏，路径=" +
+                           string.Join(" | ", list.Select(s => $"#{s.Index}:{Path.GetFileName(s.CurrentPath ?? "")}")));
+                return list;
+            }
+            catch
+            {
+                // 看门狗重建屏幕表期间枚举竞争：本轮放弃，下个周期再来
+                return new List<WallpaperCarousel.CarouselScreen>();
+            }
+        }
+
+        /// <summary>轮播执行的切换：手动操作进行中则回避；否则走标准设置流程（叠化过渡 + 持久化）。
+        /// 注意：轮播定时器回调在线程池线程上，而所有 Provider（WPF 窗口 / WebView2 COM 对象）
+        /// 都在 UI 线程创建——跨线程直接访问 WebView2 会抛 "Unable to cast COM object ...
+        /// ICoreWebView2Controller"（轮播到点不切换的根因）。因此整体调度回 UI 线程执行，
+        /// 与手动"设为壁纸"点击（本就在 UI 线程）走完全相同的执行环境。</summary>
+        private async Task CarouselApplyAsync(string path, WallpaperType type, int screenIndex)
+        {
+            if (IsBusy)
+            {
+                Logger.Log($"[Carousel] 跳过切换（忙 opActive={System.Threading.Volatile.Read(ref _opActive)}）：{Path.GetFileName(path)}");
+                return;
+            }
+            var disp = System.Windows.Application.Current?.Dispatcher;
+            if (disp != null && !disp.CheckAccess())
+                await disp.InvokeAsync(() => SetWallpaperAsync(path, type, screenIndex, save: true)).Task.Unwrap();
+            else
+                await SetWallpaperAsync(path, type, screenIndex, save: true);
+        }
+
+        /// <summary>轮播避让条件：仅用户主动暂停 / 全屏应用（游戏/视频）置于前台时避让，
+        /// 不打扰用户。电池不再避让——轮播切换（多为静态图）开销极小，用户明确期望幻灯片按时切换。</summary>
+        private bool ShouldSkipCarousel() =>
+            _userPaused
+            || (_config.PauseOnFullscreen && _fs.Peek());
+
+        /// <summary>轮播设置变更后由设置窗口调用：按新配置重启/停止轮播定时器。</summary>
+        public void ApplyCarouselSettings() => _carousel.ApplySettings();
 
         public bool IsPaused => _userPaused;
         public int ScreenCount => _states.Count;
@@ -127,6 +189,9 @@ namespace DynamicWallpaper.Core
                 }
                 _config.Save();
             }
+
+            // 启动壁纸轮播（按配置决定是否开启）
+            _carousel.ApplySettings();
         }
 
         private void ReadOriginalWallpaper()
@@ -190,6 +255,151 @@ namespace DynamicWallpaper.Core
             }
         }
 
+        /// <summary>读取指定壁纸路径的旋转角度（0/90/180/270）；未设置返回 0。</summary>
+        public int GetRotation(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return 0;
+            return _config.WallpaperRotations.TryGetValue(path.ToLowerInvariant(), out var v) ? v : 0;
+        }
+
+        /// <summary>把旋转角度写入指定 Provider 实例（不立即重绘，供创建时一次性注入）。</summary>
+        private static void SetProviderRotation(IWallpaperProvider provider, int deg)
+        {
+            switch (provider)
+            {
+                case Providers.ImageProvider img: img.Rotation = deg; break;
+                case Providers.GifProvider gif: gif.Rotation = deg; break;
+                case Providers.VideoProvider vid: vid.Rotation = deg; break;
+                case Providers.StaticFadeProvider fade: fade.Rotation = deg; break;
+                case Providers.WebProvider web: web.Rotation = deg; break;
+            }
+        }
+
+        /// <summary>把旋转角度写入 Provider 实例并立即重绘已渲染内容（须在 UI 线程调用）。</summary>
+        private static void ApplyRotationTo(IWallpaperProvider provider, int deg)
+        {
+            Logger.Log($"[WallpaperManager] ApplyRotationTo 类型={provider.GetType().Name} 角度={deg}°");
+            SetProviderRotation(provider, deg);
+            switch (provider)
+            {
+                case Providers.ImageProvider img: img.ApplyRotation(); break;
+                case Providers.GifProvider gif: gif.ApplyRotation(); break;
+                case Providers.VideoProvider vid: vid.ApplyRotation(); break;
+                case Providers.StaticFadeProvider fade: fade.ApplyRotation(); break;
+                case Providers.WebProvider web: web.ApplyRotation(); break;
+            }
+        }
+
+        /// <summary>旋转指定壁纸（按路径）。delta 为相对角度：+90=顺时针90°、-90=逆时针90°、0=不旋转（重置）。
+        /// 累加后取模 360（>=360 自动归零）；立即作用于正在显示该壁纸的屏幕，并持久化（下次设置/轮播时自动生效）。
+        /// 返回实际生效的屏幕数（0 表示该壁纸当前未在任意屏幕显示，旋转仅记录、下次显示时生效）。</summary>
+        public int RotateWallpaper(string path, int delta)
+        {
+            if (string.IsNullOrEmpty(path)) return 0;
+            var key = path.ToLowerInvariant();
+            int cur = _config.WallpaperRotations.TryGetValue(key, out var v) ? v : 0;
+            int newRot = delta == 0 ? 0 : (((cur + delta) % 360) + 360) % 360;
+            _config.WallpaperRotations[key] = newRot;
+
+            int applied = 0;
+            int totalScreens = _states.Count;
+            foreach (var st in _states.Values)
+            {
+                if (string.IsNullOrEmpty(st.LastPath) ||
+                    !string.Equals(st.LastPath, path, StringComparison.OrdinalIgnoreCase)) continue;
+                var provider = st.Provider;
+                Logger.Log($"[WallpaperManager] 旋转命中屏{st.Index}：Provider={(provider?.GetType().Name ?? "null")} IsStaticImage={st.IsStaticImage}");
+                if (provider == null)
+                {
+                    // 系统 API 降级路径：当前屏是系统静态壁纸（无 Provider 窗口层）。
+                    // 右键旋转需直接按新角度重设旋转后的壁纸，并沿用设置里的适应方式（Fill/Fit/Center）。
+                    if (st.IsStaticImage)
+                    {
+                        try
+                        {
+                            var rotPath = CreateRotatedImage(st.LastPath, newRot) ?? st.LastPath;
+                            SetSystemWallpaper(rotPath);
+                            applied++;
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Log($"[WallpaperManager] 应用旋转(系统API)失败: {ex.Message}");
+                        }
+                    }
+                    continue;
+                }
+                try
+                {
+                    if (System.Windows.Application.Current?.Dispatcher != null)
+                        System.Windows.Application.Current.Dispatcher.InvokeAsync(() => ApplyRotationTo(provider, newRot));
+                    else
+                        ApplyRotationTo(provider, newRot);
+                    applied++;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"[WallpaperManager] 应用旋转失败: {ex.Message}");
+                }
+            }
+            _config.Save();
+            Logger.Log($"[WallpaperManager] 旋转壁纸 {Path.GetFileName(path)} {cur}°->{newRot}°（delta={delta}，已作用屏幕数={applied}/{totalScreens}）");
+            return applied;
+        }
+
+        /// <summary>旋转某个幻灯片文件夹当前正在显示的壁纸（按已设置屏幕的当前路径分别旋转）。
+        /// 返回实际命中并旋转的屏幕数。</summary>
+        public int RotateWallpaperByFolder(string folder, int delta)
+        {
+            if (string.IsNullOrEmpty(folder)) return 0;
+            // 归一化：去掉结尾分隔符并大小写不敏感比较，避免幻灯片文件夹路径带/不带尾斜杠
+            // 或大小写差异导致 Path.GetDirectoryName(st.LastPath) 与 folder 不匹配、整轮旋转 0 命中。
+            var normFolder = folder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Trim();
+            int hit = 0;
+            foreach (var st in _states.Values)
+            {
+                if (string.IsNullOrEmpty(st.LastPath)) continue;
+                var dir = Path.GetDirectoryName(st.LastPath)?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Trim();
+                if (!string.Equals(dir, normFolder, StringComparison.OrdinalIgnoreCase)) continue;
+                RotateWallpaper(st.LastPath, delta);
+                hit++;
+            }
+            Logger.Log($"[WallpaperManager] 旋转幻灯片文件夹壁纸：{folder}（归一化={normFolder}，命中屏幕数={hit}）");
+            return hit;
+        }
+
+        /// <summary>为系统 API 直设路径生成旋转后的临时图片（仅降级路径使用；WebView2 路径用 CSS 旋转）。
+        /// 旋转副本写入程序目录 RotatedCache，失败返回 null（回退原图）。</summary>
+        private static string? CreateRotatedImage(string path, int rotation)
+        {
+            try
+            {
+                var r = ((rotation % 360) + 360) % 360;
+                if (r == 0 || !File.Exists(path)) return null;
+                using var fs = File.OpenRead(path);
+                using var img = System.Drawing.Image.FromStream(fs);
+                img.RotateFlip(r == 90
+                    ? System.Drawing.RotateFlipType.Rotate90FlipNone
+                    : r == 180
+                        ? System.Drawing.RotateFlipType.Rotate180FlipNone
+                        : System.Drawing.RotateFlipType.Rotate270FlipNone);
+                var dir = Path.Combine(AppPaths.RootDirectory, "RotatedCache");
+                Directory.CreateDirectory(dir);
+                bool isPng = string.Equals(Path.GetExtension(path), ".png", StringComparison.OrdinalIgnoreCase);
+                var outPath = Path.Combine(dir,
+                    $"{Path.GetFileNameWithoutExtension(path)}_rot{r}{(isPng ? ".png" : ".jpg")}");
+                using var outFs = File.Create(outPath);
+                img.Save(outFs, isPng
+                    ? System.Drawing.Imaging.ImageFormat.Png
+                    : System.Drawing.Imaging.ImageFormat.Jpeg);
+                return outPath;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[WallpaperManager] 生成旋转图片失败: {ex.Message}");
+                return null;
+            }
+        }
+
         /// <summary>开始一次屏幕操作：先打断上一个进行中的操作（使其尽快释放 _screenOpLock，
         /// 实现手动打断加载），再排队等锁；拿锁后返回本次操作的取消令牌。若排队期间又被更新的
         /// 操作打断（令牌已取消），调用方应在拿到锁后立即检查并退出。</summary>
@@ -212,6 +422,7 @@ namespace DynamicWallpaper.Core
         /// status 为可选切换状态回调（正在切换/已应用/失败原因），供 UI 状态栏反馈。</summary>
         public async Task SetWallpaperAsync(string path, WallpaperType type, int screenIndex = 0, bool save = true, Action<string>? status = null)
         {
+            System.Threading.Interlocked.Increment(ref _opActive);
             var opToken = await BeginScreenOperationAsync();
             try
             {
@@ -222,6 +433,7 @@ namespace DynamicWallpaper.Core
 
                 // 同步壁纸适应方式到各 Provider（静态属性，Provider 创建时读取）
                 SyncFitMode();
+                // 旋转角度按壁纸路径独立注入：在各 Provider 创建前用 GetRotation 写入实例（见下方各分支 Show 之前）。
 
                 // 静态图片：直接用系统 API（IDesktopWallpaper）设置桌面壁纸。
                 // 若当前屏幕正在播放动态壁纸 A，切换顺序必须"先设系统壁纸 S、后销毁 A"：
@@ -258,7 +470,9 @@ namespace DynamicWallpaper.Core
                                 catch (Exception ex) { Logger.Log($"[WallpaperManager] 旧壁纸 Dispose 异常: {ex.Message}"); }
                             }, System.Windows.Threading.DispatcherPriority.Background);
                         }
-                        SetSystemWallpaper(path);
+                        // 系统 API 不支持旋转，需要旋转时先生成旋转副本再设置
+                        var setPath = CreateRotatedImage(path, GetRotation(path)) ?? path;
+                        SetSystemWallpaper(setPath);
                         st.Provider = null;
                         st.IsStaticImage = true;
                         st.LastPath = path;
@@ -281,20 +495,21 @@ namespace DynamicWallpaper.Core
                     // 108 轮验证过可用，代价是冷启动 ~1s 延迟，但保证能切过去。
                     if (prevProvider is VideoProvider vpImage && vpImage.IsImageMode)
                     {
+                        SetProviderRotation(vpImage, GetRotation(path));
                         bool navOk = await vpImage.NavigateImageAsync(path);
                         bool ready = navOk && await vpImage.WaitVideoReadyAsync(TimeSpan.FromSeconds(6));
-                        if (!ready)
+                        if (ready)
                         {
-                            Logger.Log("[WallpaperManager] 静态图切换未就绪，保持原壁纸状态");
-                            status?.Invoke("切换失败：静态图加载未就绪（已保持原壁纸）");
+                            st.LastPath = path;
+                            st.LastType = type;
+                            st.IsStaticImage = true;
+                            if (save) PersistAssignments();
+                            status?.Invoke("已应用：" + Path.GetFileName(path));
                             return;
                         }
-                        st.LastPath = path;
-                        st.LastType = type;
-                        st.IsStaticImage = true;
-                        if (save) PersistAssignments();
-                        status?.Invoke("已应用：" + Path.GetFileName(path));
-                        return;
+                        // 快速路径未就绪不再直接放弃（否则表现为"设置不成功、保持原壁纸"）：
+                        // 记日志后继续走下方冷启动路径（销毁重建静态层），保证一定能切过去。
+                        Logger.Log("[WallpaperManager] 静态图快速切换未就绪，转冷启动重建静态层");
                     }
 
                     // 静态壁纸即时显示：由 WebView2 静态层（VideoProvider 图片模式，虚拟主机映射
@@ -305,6 +520,7 @@ namespace DynamicWallpaper.Core
                     IntPtr staticChildHwnd = await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
                     {
                         var p = new VideoProvider();
+                        SetProviderRotation(p, GetRotation(path));
                         p.Show(path, st.Bounds); // 图片模式：无声音概念，无需 SetMuted
                         st.Provider = p;
                         return p.Handle;
@@ -391,6 +607,7 @@ namespace DynamicWallpaper.Core
                     st.LastPath = path;
                     st.LastType = type;
                     if (save) PersistAssignments();
+                    Logger.Log($"[WallpaperManager] 已设静态壁纸 屏{screenIndex}：path={path} Provider={st.Provider?.GetType().Name} IsStaticImage={st.IsStaticImage}");
                     status?.Invoke("已应用：" + Path.GetFileName(path));
                     return;
                 }
@@ -428,6 +645,7 @@ namespace DynamicWallpaper.Core
                         // 非静音时页面加载即出声），再创建渲染窗口；此刻 Controller 尚未创建，
                         // SetMuted 里的 JS 调用会自动跳过，仅把状态存入 provider。
                         provider.SetMuted(_config.Mute);
+                        SetProviderRotation(provider, GetRotation(path));
                         provider.Show(path, st.Bounds);
                     }
                     catch (Exception ex)
@@ -538,6 +756,7 @@ namespace DynamicWallpaper.Core
             }
             finally
             {
+                System.Threading.Interlocked.Decrement(ref _opActive);
                 _screenOpLock.Release();
                 RaiseStateChanged();
             }
@@ -669,6 +888,7 @@ namespace DynamicWallpaper.Core
         /// <summary>清空某一屏的壁纸（恢复为系统静态壁纸）。</summary>
         public async Task ClearScreenAsync(int screenIndex)
         {
+            System.Threading.Interlocked.Increment(ref _opActive);
             var opToken = await BeginScreenOperationAsync();
             try
             {
@@ -679,6 +899,7 @@ namespace DynamicWallpaper.Core
             }
             finally
             {
+                System.Threading.Interlocked.Decrement(ref _opActive);
                 _screenOpLock.Release();
                 RaiseStateChanged();
             }
@@ -692,6 +913,7 @@ namespace DynamicWallpaper.Core
         /// </summary>
         public async Task StopAsync(bool restoreWallpaper = true, bool persistState = true)
         {
+            System.Threading.Interlocked.Increment(ref _opActive);
             var opToken = await BeginScreenOperationAsync();
             try
             {
@@ -702,6 +924,7 @@ namespace DynamicWallpaper.Core
             }
             finally
             {
+                System.Threading.Interlocked.Decrement(ref _opActive);
                 _screenOpLock.Release();
                 RaiseStateChanged();
             }
@@ -838,23 +1061,46 @@ namespace DynamicWallpaper.Core
                     Logger.Log($"[WallpaperManager] 静态壁纸文件不存在: {path}");
                     return;
                 }
-                Win32.SetDesktopWallpaper(path);
-                Logger.Log($"[WallpaperManager] 已设置静态壁纸: {path}");
+                // 按设置里的适应方式映射系统壁纸位置（Fill/Fit/Center），保证旋转后的壁纸
+                // 在系统 API 降级路径下也遵循该适应方式，而非系统默认 Fill。
+                int position = FitToDesktopPosition(_config.WallpaperFit);
+                Win32.SetDesktopWallpaper(path, position);
+                Logger.Log($"[WallpaperManager] 已设置静态壁纸（适应方式={_config.WallpaperFit}→position={position}）: {path}");
             }
             catch (Exception ex)
             {
                 Logger.Log($"[WallpaperManager] 设置静态壁纸失败: {ex.Message}");
-                // 新 API 异常时回退到 SPI，保证功能可用
+                // 新 API 异常时回退到 SPI：先写注册表 WallpaperStyle/TileWallpaper 再触发系统重绘
                 try
                 {
+                    var fit = string.IsNullOrWhiteSpace(_config.WallpaperFit) ? "fill" : _config.WallpaperFit.Trim().ToLowerInvariant();
+                    var (style, tile) = fit switch
+                    {
+                        "center" => ("0", "0"),
+                        "fit" => ("6", "0"),
+                        _ => ("10", "0")
+                    };
+                    Registry.SetValue(@"HKEY_CURRENT_USER\Control Panel\Desktop", "WallpaperStyle", style);
+                    Registry.SetValue(@"HKEY_CURRENT_USER\Control Panel\Desktop", "TileWallpaper", tile);
                     Win32.SystemParametersInfo(Win32.SPI_SETDESKWALLPAPER, 0, path, Win32.SPIF_UPDATEINIFILE | Win32.SPIF_SENDCHANGE);
-                    Logger.Log($"[WallpaperManager] 已通过 SPI 回退设置静态壁纸: {path}");
+                    Logger.Log($"[WallpaperManager] 已通过 SPI 回退设置静态壁纸（适应方式={fit}）: {path}");
                 }
                 catch (Exception ex2)
                 {
                     Logger.Log($"[WallpaperManager] SPI 回退设置静态壁纸也失败: {ex2.Message}");
                 }
             }
+        }
+
+        /// <summary>把 App 适应方式映射为 IDesktopWallpaper 位置枚举：center→0 / fit→3 / fill(或未知)→4。</summary>
+        private static int FitToDesktopPosition(string? fit)
+        {
+            return (string.IsNullOrWhiteSpace(fit) ? "fill" : fit.Trim().ToLowerInvariant()) switch
+            {
+                "center" => 0,
+                "fit" => 3,
+                _ => 4
+            };
         }
 
         /// <summary>把系统桌面恢复为程序启动前的静态壁纸。</summary>

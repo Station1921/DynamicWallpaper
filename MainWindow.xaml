@@ -1062,6 +1062,137 @@
                     </ScrollViewer>
                 </Grid>
             </TabItem>
+
+            <!-- 幻灯片（文件夹图库）：每个文件夹以一张封面图展示为卡片，设为壁纸后由轮播定时切换 -->
+            <TabItem Header="幻灯片">
+                <ScrollViewer x:Name="SlideshowScroll" Margin="4,14,4,14" VerticalScrollBarVisibility="Hidden" Background="Transparent">
+                    <StackPanel Background="Transparent">
+                        <StackPanel Orientation="Horizontal" Margin="8,0,0,10" VerticalAlignment="Center">
+                            <StackPanel.Resources>
+                                <Style x:Key="FitRadio" TargetType="RadioButton">
+                                    <Setter Property="Foreground" Value="#D8D8E0"/>
+                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                    <Setter Property="Cursor" Value="Hand"/>
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="RadioButton">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Grid Width="16" Height="16" VerticalAlignment="Center">
+                                                        <Ellipse x:Name="Outer" Stroke="#5A5A66" StrokeThickness="1.5" Fill="Transparent"/>
+                                                        <Ellipse x:Name="Dot" Width="8" Height="8" Fill="#4C8DFF" Visibility="Collapsed"/>
+                                                    </Grid>
+                                                    <ContentPresenter Margin="8,0,0,0" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+                                                </StackPanel>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsChecked" Value="True">
+                                                        <Setter TargetName="Outer" Property="Stroke" Value="#4C8DFF"/>
+                                                        <Setter TargetName="Dot" Property="Visibility" Value="Visible"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="Outer" Property="Stroke" Value="#6FA5FF"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </StackPanel.Resources>
+                            <TextBlock Text="幻灯片" FontSize="13" Foreground="#8A8A95"/>
+                            <TextBlock x:Name="SlideshowCountText" Text="共 0 个文件夹" FontSize="13" Foreground="#6A6A75" Margin="12,0,0,0"/>
+                            <TextBlock Text="切换间隔" Foreground="#8A8A95" FontSize="12" Margin="18,0,0,0" VerticalAlignment="Center"/>
+                            <TextBox x:Name="SlideshowIntervalBox" Width="44" Margin="6,0" VerticalAlignment="Center"
+                                     TextChanged="SlideshowInterval_Changed" PreviewTextInput="NumberOnly_Preview" MaxLength="4"/>
+                            <TextBlock Text="分钟" Foreground="#8A8A95" FontSize="12" VerticalAlignment="Center"/>
+                            <RadioButton x:Name="SlideshowOrderSeq" Content="顺序" Style="{StaticResource FitRadio}" GroupName="SlideshowOrderGroup" Margin="14,0,12,0" Checked="SlideshowOrder_Changed"/>
+                            <RadioButton x:Name="SlideshowOrderRand" Content="随机" Style="{StaticResource FitRadio}" GroupName="SlideshowOrderGroup" Checked="SlideshowOrder_Changed"/>
+                        </StackPanel>
+                        <ItemsControl x:Name="SlideshowList" ItemsSource="{Binding SlideshowItems}">
+                            <ItemsControl.Resources>
+                                <!-- 文件夹卡片（图库视图：封面 + 名称 + 数量） -->
+                                <DataTemplate DataType="{x:Type models:SlideshowFolderItem}">
+                                    <Border Width="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType=Window}, Path=CardWidth}" Height="178" Margin="6"
+                                            MouseRightButtonUp="SlideshowCard_RightClick" Cursor="Hand" SnapsToDevicePixels="True"
+                                            Style="{StaticResource Card}" ToolTip="{Binding Folder}">
+                                        <Grid>
+                                            <Grid.Clip>
+                                                <MultiBinding Converter="{StaticResource SizeToClipGeometry}" ConverterParameter="9">
+                                                    <Binding Path="ActualWidth" RelativeSource="{RelativeSource Self}"/>
+                                                    <Binding Path="ActualHeight" RelativeSource="{RelativeSource Self}"/>
+                                                </MultiBinding>
+                                            </Grid.Clip>
+                                            <Image Source="{Binding Cover}" Stretch="UniformToFill" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                            <!-- 无封面兜底：深色底 + 文案 -->
+                                            <Border Background="#15151B" Visibility="{Binding Cover, Converter={StaticResource NullToVisibility}, ConverterParameter=inverse}">
+                                                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                    <TextBlock Text="空文件夹" Foreground="#6A6A75" FontSize="13" HorizontalAlignment="Center"/>
+                                                    <TextBlock Text="（没有可用的图片/视频）" Foreground="#6A6A75" FontSize="10" Margin="0,4,0,0" HorizontalAlignment="Center"/>
+                                                </StackPanel>
+                                            </Border>
+                                            <!-- 已应用到的屏幕徽标 -->
+                                            <Border Background="#4C8DFF" CornerRadius="4" Padding="6,2"
+                                                    HorizontalAlignment="Left" VerticalAlignment="Top" Margin="6"
+                                                    Visibility="{Binding ActiveScreens, Converter={StaticResource StringToVisibility}}">
+                                                <TextBlock Text="{Binding ActiveScreens}" Foreground="White" FontSize="10"/>
+                                            </Border>
+                                            <!-- 底部信息条：名称 + 数量 + 操作 -->
+                                            <Border VerticalAlignment="Bottom" Background="#CC000000" Padding="8" CornerRadius="0,0,9,9">
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding Name}" Foreground="White" FontSize="12" TextTrimming="CharacterEllipsis"/>
+                                                    <TextBlock Text="{Binding Count, StringFormat='{}{0} 项'}" Foreground="#B8B8C0" FontSize="10" Margin="0,2,0,0"/>
+                                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                                                        <Button Content="设为壁纸" Style="{StaticResource PrimaryBtn}"
+                                                                Padding="10,4" FontSize="11" Click="SlideshowSetWallpaper_Click"
+                                                                Visibility="{Binding IsActive, Converter={StaticResource BoolToVisibility}, ConverterParameter=inverse}"/>
+                                                        <Button Content="解除" Style="{StaticResource ClearWallpaperBtn}"
+                                                                Padding="10,4" FontSize="11" Click="SlideshowClear_Click"
+                                                                Visibility="{Binding IsActive, Converter={StaticResource BoolToVisibility}}"/>
+                                                    </StackPanel>
+                                                </StackPanel>
+                                            </Border>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+
+                                <!-- 占位卡片：添加文件夹（始终排在最后，不消失） -->
+                                <DataTemplate DataType="{x:Type models:SlideshowAddItem}">
+                                    <Border Width="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType=Window}, Path=CardWidth}" Height="178" Margin="6"
+                                            Background="#20202A" BorderBrush="#3A3A45" BorderThickness="1" CornerRadius="10" Cursor="Hand"
+                                            MouseLeftButtonUp="SlideshowAddFolder_Click">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Style.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter Property="BorderBrush" Value="#4C8DFF"/>
+                                                    </Trigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+                                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                            <TextBlock Text="＋" FontSize="30" Foreground="#6A6A75" HorizontalAlignment="Center"/>
+                                            <Button Content="添加文件夹" Style="{StaticResource GhostBtn}" Padding="14,6" FontSize="12" Margin="0,8,0,0"
+                                                    HorizontalAlignment="Center" Click="SlideshowAddFolder_Click"/>
+                                            <TextBlock Text="点击选择或拖入文件夹" Foreground="#6A6A75" FontSize="10" Margin="10,8,10,0"
+                                                       TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.Resources>
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel Orientation="Horizontal" Margin="2"/>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                        </ItemsControl>
+                        <Border x:Name="SlideshowEmptyHint" Background="#E620202A" BorderBrush="#3A3A45" BorderThickness="1"
+                                CornerRadius="10" Padding="30" Margin="8,16,8,6" Visibility="Collapsed">
+                            <StackPanel HorizontalAlignment="Center">
+                                <TextBlock Text="还没有添加文件夹" Foreground="#8A8A95" FontSize="14" HorizontalAlignment="Center"/>
+                                <TextBlock Text="点击上方「添加文件夹」卡片，选择文件夹后它会以一张封面图的形式展示在这里" Foreground="#6A6A75" FontSize="12" Margin="0,6,0,0" HorizontalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
         </TabControl>
 
         <!-- 底部统一状态栏：左侧全局状态，竖直分割线，右侧加载操作 -->

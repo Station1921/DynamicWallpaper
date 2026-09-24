@@ -1,7 +1,7 @@
     <Window x:Class="DynamicWallpaper.UI.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="设置" Height="560" Width="392"
+        Title="设置" Width="392" SizeToContent="Height"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
         Background="#1B1B22"
@@ -38,6 +38,7 @@
         </Style>
     </Window.Resources>
 
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
     <StackPanel Margin="22">
         <TextBlock Text="设置" FontSize="16" FontWeight="Bold" Foreground="White" Margin="0,0,0,14"/>
 
@@ -55,7 +56,7 @@
             <RadioButton x:Name="FitCenter" Content="居中（原始大小）" Style="{StaticResource FitRadio}" GroupName="FitGroup" Checked="Fit_Changed"/>
         </StackPanel>
 
-        <TextBlock Text="提示：壁纸渲染在桌面图标之后，自动暂停可释放 GPU/CPU。" Foreground="#7A7A85" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap"/>
+        <TextBlock Text="提示：壁纸渲染在桌面图标之后，自动暂停可释放 GPU/CPU。单张壁纸的旋转请在「壁纸分类」中右键该壁纸选择「旋转」。" Foreground="#7A7A85" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap"/>
 
         <TextBlock Text="缓存管理" FontSize="13" FontWeight="Bold" Foreground="#D8D8E0" Margin="0,14,0,8"/>
         <TextBlock x:Name="CacheInfo" Foreground="#7A7A85" FontSize="11" Margin="0,0,0,8" TextWrapping="Wrap"/>
@@ -70,4 +71,5 @@
         </StackPanel>
         <TextBlock Text="缓存仅含在线壁纸缩略图与悬停预览；已下载的壁纸不会被清除。" Foreground="#7A7A85" FontSize="11" Margin="0,2,0,0" TextWrapping="Wrap"/>
     </StackPanel>
+    </ScrollViewer>
 </Window>

@@ -128,6 +128,11 @@ namespace DynamicWallpaper.Providers
         /// <summary>壁纸适应方式：fill=铺满裁剪 / fit=完整显示 / center=原始居中。由 WallpaperManager 在切换时注入。</summary>
         public static string FitMode { get; set; } = "fill";
 
+        /// <summary>旋转角度（0/90/180/270），由 WallpaperManager 在切换/右键旋转时注入。
+        /// 网页壁纸为任意 HTML，无统一 img/video 元素，故旋转作用于整页（documentElement），
+        /// 90/270° 自动等比放大铺满屏幕，避免旋转后露黑边。</summary>
+        public int Rotation { get; set; } = 0;
+
         /// <summary>hls.js 内嵌资源（一次性读取并缓存），用于远程 m3u8 流式播放。</summary>
         private static readonly object _hlsLock = new();
         private static string? _hlsJsCache;
@@ -323,6 +328,8 @@ $@"<html><head><meta charset=""utf-8""><style>html,body{{margin:0;padding:0;over
             if (!_isM3u8) _contentTcs.TrySetResult(e.IsSuccess);
             // 按最新静音状态重放一次（覆盖导航前 SetMuted 因 Controller 未就绪被丢弃的情况）
             RunJs($"var v=document.getElementById('v');if(v){{v.muted={_muted.ToString().ToLowerInvariant()};v.volume={(_muted ? 0 : 1)};}}");
+            // 导航完成即按注入的 Rotation 套用整页旋转（网页壁纸为任意 HTML，初始无法在导航前注入）
+            ApplyRotation();
         }
 
         private void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -452,6 +459,30 @@ $@"<html><head><meta charset=""utf-8""><style>html,body{{margin:0;padding:0;over
                 _ => ("cover", "50% 50%", "#000")
             };
             RunJs($"var v=document.getElementById('v');if(v){{v.style.objectFit='{objectFit}';v.style.objectPosition='{objectPosition}';v.style.background='{bg}';}}");
+        }
+
+        /// <summary>运行时切换网页壁纸旋转：对整页（documentElement）做 rotate + scale 变换。
+        /// 90/270° 不缩放会露黑边，故按屏幕长宽比放大铺满；180° 旋转后尺寸不变无需缩放。
+        /// 普通网页与 m3u8 播放页统一走此路径（播放页的 video 是整页 fixed 铺满，会随之旋转）。
+        /// 注意：任意 HTML 旋转可能改变原页面布局，仅对全屏型网页壁纸有意义。</summary>
+        public void ApplyRotation()
+        {
+            var deg = Rotation;
+            Logger.Log($"[WebProvider] ApplyRotation 角度={deg}° (path={_path})");
+            // 不使用 JS 模板字符串（避免与 C# 插值冲突），deg 以占位符注入
+            var js = "(function(){"
+                   + "var r=((__DEG__%360)+360)%360;"
+                   + "var w=window.innerWidth,h=window.innerHeight;"
+                   + "var html=document.documentElement;"
+                   + "if(!html)return;"
+                   + "if(r===0){html.style.transform='';html.style.transformOrigin='';html.style.overflow='';return;}"
+                   + "var scale=(r===180)?1:(Math.max(w,h)/Math.min(w,h));"
+                   + "var origin=(w/2)+'px '+(h/2)+'px';"
+                   + "var t='rotate('+r+'deg) scale('+scale+')';"
+                   + "html.style.transformOrigin=origin;html.style.transform=t;html.style.overflow='hidden';"
+                   + "})();";
+            js = js.Replace("__DEG__", deg.ToString());
+            RunJs(js);
         }
 
         /// <summary>实现 IWallpaperProvider.WaitReadyAsync：等待 WebView2 Core 初始化 + 页面导航完成 + 内容可播放，
