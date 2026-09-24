@@ -262,6 +262,34 @@ namespace DynamicWallpaper.Core
             return _config.WallpaperRotations.TryGetValue(path.ToLowerInvariant(), out var v) ? v : 0;
         }
 
+        /// <summary>清除指定壁纸的旋转记录（从壁纸库移除时调用）。否则重新添加同名壁纸时
+        /// 旧旋转角度残留生效，与新设置互相冲突导致旋转混乱；同时清理系统 API 降级路径的旋转副本。</summary>
+        public void ClearRotation(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return;
+            if (_config.WallpaperRotations.Remove(path.ToLowerInvariant()))
+            {
+                _config.Save();
+                Logger.Log($"[WallpaperManager] 已清除旋转记录：{Path.GetFileName(path)}");
+            }
+            try
+            {
+                var dir = Path.Combine(AppPaths.RootDirectory, "RotatedCache");
+                if (!Directory.Exists(dir)) return;
+                var stem = Path.GetFileNameWithoutExtension(path);
+                foreach (var r in new[] { 90, 180, 270 })
+                    foreach (var ext in new[] { ".jpg", ".png" })
+                    {
+                        var f = Path.Combine(dir, $"{stem}_rot{r}{ext}");
+                        if (File.Exists(f)) File.Delete(f);
+                    }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[WallpaperManager] 清理旋转副本失败: {ex.Message}");
+            }
+        }
+
         /// <summary>把旋转角度写入指定 Provider 实例（不立即重绘，供创建时一次性注入）。</summary>
         private static void SetProviderRotation(IWallpaperProvider provider, int deg)
         {
@@ -521,7 +549,9 @@ namespace DynamicWallpaper.Core
                     {
                         var p = new VideoProvider();
                         SetProviderRotation(p, GetRotation(path));
-                        p.Show(path, st.Bounds); // 图片模式：无声音概念，无需 SetMuted
+                        // forceImage：静态壁纸分支的冷启动必须按图片模式渲染。无扩展名的远程图片直链
+                        // IsImageFile 判 false 会误建 <video>（图片渲染不出、旋转作用在 v 元素上错乱）。
+                        p.Show(path, st.Bounds, forceImage: true);
                         st.Provider = p;
                         return p.Handle;
                     });

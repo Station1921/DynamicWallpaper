@@ -1078,6 +1078,7 @@ namespace DynamicWallpaper
             Library.Remove(item);
             if (_config.Library.Contains(item.Path)) _config.Library.Remove(item.Path);
             _config.Assignments.RemoveAll(a => a.Path == item.Path);
+            _manager.ClearRotation(item.Path); // 旋转记录一并清除，避免重加同名壁纸时旧角度残留生效
             _config.Save();
 
             RefreshEmpty();
@@ -1170,6 +1171,7 @@ namespace DynamicWallpaper
             Library.Remove(item);
             if (_config.Library.Contains(item.Path)) _config.Library.Remove(item.Path);
             _config.Assignments.RemoveAll(a => a.Path == item.Path);
+            _manager.ClearRotation(item.Path); // 旋转记录一并清除，避免重加同名壁纸时旧角度残留生效
             _config.Save();
             RefreshEmpty();
             RefreshActiveBadges();

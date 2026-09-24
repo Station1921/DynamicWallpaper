@@ -90,6 +90,9 @@ namespace DynamicWallpaper.Providers
                 _image!.Source = LoadImage(path, Math.Max(bounds.Width, bounds.Height));
                 _image.Opacity = 0;
                 _window.SetDeviceBounds(bounds);
+                // 换图必须按新壁纸的旋转角度重排布局（Rotation 已由调用方在 Show 前注入），
+                // 否则复用层会残留上一张壁纸的旋转布局
+                ApplyRotationLayout(_image!, bounds);
             }
         }
 
@@ -159,14 +162,16 @@ namespace DynamicWallpaper.Providers
             }
             else if (r == 180)
             {
-                img.Width = double.NaN;
-                img.Height = double.NaN;
+                img.Width = bounds.Width;    // 180° 仅旋转不互换尺寸，仍按屏幕尺寸铺满
+                img.Height = bounds.Height;
                 img.LayoutTransform = new System.Windows.Media.RotateTransform(180);
             }
             else
             {
-                img.Width = double.NaN;
-                img.Height = double.NaN;
+                // 0° 不旋转：必须按屏幕尺寸铺满（不能留 NaN 自然尺寸），否则从 90/270 设回不旋转时
+                // 图片会缩回自然尺寸、不再铺满屏幕，表现为"偏移出屏幕"。
+                img.Width = bounds.Width;
+                img.Height = bounds.Height;
                 img.LayoutTransform = null;
             }
         }

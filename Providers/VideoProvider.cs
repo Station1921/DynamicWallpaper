@@ -211,7 +211,7 @@ namespace DynamicWallpaper.Providers
             if (ctrl == null)
             {
                 // 冷启动兜底：Controller 尚未就绪时走完整 Show 流程（正常切换路径不会触发）
-                Show(path, _bounds);
+                Show(path, _bounds, forceImage: true);
                 _isImage = true;
                 return true;
             }
@@ -234,7 +234,9 @@ namespace DynamicWallpaper.Providers
                 var bgOnLoad = FitMode == "center" ? "transparent" : "#000";
                 await WaitNavAndRunAsync(
                     "var v=document.getElementById('v');var i=document.getElementById('i');" +
-                    $"if(i){{i.src='{src}';}}" +
+                    // 换图必须连定位/旋转/适应 CSS 一起重写：img 元素跨壁纸复用，只换 src 会残留
+                    // 上一张壁纸的 rotate()（表现为 A 设置的旋转串到后切的 B/C，或轮播切换后仍旋转）
+                    $"if(i){{i.src='{src}';i.style.cssText='position:fixed;{BuildImageRotationCss()}{css};background:transparent';}}" +
                     $"else{{var n=document.createElement('img');n.id='i';" +
                     // 背景先置透明：加载期间露出下方 video，绝不出现黑屏
                     $"n.style.cssText='position:fixed;{BuildImageRotationCss()}{css};background:transparent';" +
@@ -265,11 +267,15 @@ namespace DynamicWallpaper.Providers
             ApplyRotation();
         }
 
-        public void Show(string path, Rectangle bounds)
+        public void Show(string path, Rectangle bounds) => Show(path, bounds, null);
+
+        public void Show(string path, Rectangle bounds, bool? forceImage = null)
         {
             _path = path;
             _bounds = bounds;
-            _isImage = IsImageFile(path);
+            // 默认按扩展名判定；无扩展名的远程图片直链会被误判为视频（<video> 无法渲染图片），
+            // 调用方（静态壁纸冷启动/动切静兜底）可通过 forceImage:true 强制图片模式。
+            _isImage = forceImage ?? IsImageFile(path);
             EnsureWindowClass();
 
             // WS_EX_LAYERED 必须在创建时携带：创建后再动态 SetWindowLong 设置无效
