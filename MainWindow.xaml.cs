@@ -1044,6 +1044,131 @@ namespace DynamicWallpaper
             e.Handled = true;
         }
 
+        // ---------- 卡片拖拽排序（壁纸库 / 幻灯片文件夹） ----------
+        // 鼠标左键按住卡片本体拖动即可调整顺序；拖动到目标卡片上松手即插入到该卡片之前。
+        // 占位“添加文件夹”卡片（SlideshowAddItem）未挂接拖拽，始终保持在末尾。
+        private object? _dragItem;
+        private System.Windows.Point _dragStartPoint;
+        private bool _isDragging;
+        private Border? _lastDragOver;
+        private const double DragThreshold = 6;
+
+        private void Card_PreviewMouseLeftDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ChangedButton != MouseButton.Left) return;
+            // 在按钮等交互控件上按下不发起拖拽，避免与“设为壁纸/解除”点击冲突
+            if (IsDragFromControl(e.OriginalSource)) return;
+            _dragItem = (sender as FrameworkElement)?.DataContext;
+            if (_dragItem == null) return;
+            _dragStartPoint = e.GetPosition(null);
+            _isDragging = false;
+        }
+
+        private void Card_PreviewMouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+        {
+            if (_dragItem == null || _isDragging) return;
+            if (e.LeftButton != MouseButtonState.Pressed)
+            {
+                _dragItem = null;
+                return;
+            }
+            var diff = e.GetPosition(null) - _dragStartPoint;
+            if (diff.Length < DragThreshold) return;
+
+            _isDragging = true;
+            var border = (Border)sender;
+            border.Opacity = 0.55; // 拖起时源卡片半透明，跟随光标的系统拖影作为视觉反馈
+            try
+            {
+                System.Windows.DragDrop.DoDragDrop(border, _dragItem, DragDropEffects.Move);
+            }
+            finally
+            {
+                border.Opacity = 1;
+                if (_lastDragOver != null) { _lastDragOver.Opacity = 1; _lastDragOver = null; }
+                _isDragging = false;
+            }
+        }
+
+        private void Card_PreviewMouseUp(object sender, MouseButtonEventArgs e)
+        {
+            if (!_isDragging) _dragItem = null;
+        }
+
+        private void Card_DragOver(object sender, DragEventArgs e)
+        {
+            if (_dragItem == null) { e.Effects = DragDropEffects.None; e.Handled = true; return; }
+            e.Effects = DragDropEffects.Move;
+            e.Handled = true;
+            var border = sender as Border;
+            if (border == null || border == _lastDragOver) return;
+            if (_lastDragOver != null) _lastDragOver.Opacity = 1;
+            _lastDragOver = border;
+            border.Opacity = 0.7; // 高亮当前悬停的目标卡片
+        }
+
+        private void Card_DragLeave(object sender, DragEventArgs e)
+        {
+            var border = sender as Border;
+            if (border != null && border == _lastDragOver)
+            {
+                border.Opacity = 1;
+                _lastDragOver = null;
+            }
+        }
+
+        private void Card_Drop(object sender, DragEventArgs e)
+        {
+            var target = (sender as FrameworkElement)?.DataContext;
+            if (_lastDragOver != null) { _lastDragOver.Opacity = 1; _lastDragOver = null; }
+            var source = _dragItem;
+            _dragItem = null;
+            if (source == null || target == null || ReferenceEquals(source, target)) return;
+            ReorderByDrag(source, target);
+            e.Handled = true;
+        }
+
+        private static bool IsDragFromControl(object originalSource)
+        {
+            var dep = originalSource as DependencyObject;
+            while (dep != null)
+            {
+                if (dep is System.Windows.Controls.Button) return true;
+                dep = System.Windows.Media.VisualTreeHelper.GetParent(dep);
+            }
+            return false;
+        }
+
+        /// <summary>把 source 移动到 target 在集合中的位置（插入到 target 之前），并持久化新顺序。</summary>
+        private void ReorderByDrag(object source, object target)
+        {
+            if (source is WallpaperItem wi && target is WallpaperItem wt)
+            {
+                int oldIndex = Library.IndexOf(wi);
+                if (oldIndex < 0) return;
+                Library.RemoveAt(oldIndex);
+                int ti = Library.IndexOf(wt);
+                if (ti < 0) ti = Library.Count;
+                Library.Insert(ti, wi);
+                _config.Library = Library.Select(i => i.Path).ToList();
+                _config.Save();
+                Logger.Log($"[Reorder] 壁纸库顺序已更新（{Path.GetFileName(wi.Path)} -> 第 {ti + 1} 位）");
+            }
+            else if (source is SlideshowFolderItem sf && target is SlideshowFolderItem st)
+            {
+                int oldIndex = SlideshowItems.IndexOf(sf);
+                if (oldIndex < 0) return;
+                SlideshowItems.RemoveAt(oldIndex);
+                int ti = SlideshowItems.IndexOf(st);
+                if (ti < 0) ti = SlideshowItems.Count;
+                SlideshowItems.Insert(ti, sf);
+                _config.CarouselFolders = SlideshowItems.OfType<SlideshowFolderItem>()
+                    .Select(i => i.Folder).ToList();
+                _config.Save();
+                Logger.Log($"[Reorder] 幻灯片文件夹顺序已更新（{Path.GetFileName(sf.Folder)} -> 第 {ti + 1} 位）");
+            }
+        }
+
         /// <summary>构造“旋转”二级菜单（不旋转/顺时针/逆时针），按壁纸路径独立记录旋转角度，单次 90° 可叠加，>=360 归零。</summary>
         private MenuItem BuildRotationSubMenu(string path)
         {
