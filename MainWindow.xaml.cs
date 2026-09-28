@@ -1048,84 +1048,79 @@ namespace DynamicWallpaper
         // 鼠标左键按住卡片本体拖动即可调整顺序；拖动到目标卡片上松手即插入到该卡片之前。
         // 占位“添加文件夹”卡片（SlideshowAddItem）未挂接拖拽，始终保持在末尾。
         private object? _dragItem;
+        private Border? _dragSourceBorder;
+        private ItemsControl? _dragHost;
         private System.Windows.Point _dragStartPoint;
         private bool _isDragging;
-        private Border? _lastDragOver;
-        private const double DragThreshold = 6;
+        private int _dragOriginalIndex = -1;
+        private int _dragTargetIndex = -1;
+        private List<object>? _dragItems;
+        private List<Border>? _dragBorders;
+        private List<System.Windows.Point>? _dragOrigPos;
+        private double _dragStepX, _dragStepY;
+        private int _dragCols;
+        private const double DragThreshold = 4;
 
         private void Card_PreviewMouseLeftDown(object sender, MouseButtonEventArgs e)
         {
             if (e.ChangedButton != MouseButton.Left) return;
             // 在按钮等交互控件上按下不发起拖拽，避免与“设为壁纸/解除”点击冲突
             if (IsDragFromControl(e.OriginalSource)) return;
-            _dragItem = (sender as FrameworkElement)?.DataContext;
+            var border = sender as Border;
+            if (border == null) return;
+            _dragItem = border.DataContext;
             if (_dragItem == null) return;
+            _dragSourceBorder = border;
             _dragStartPoint = e.GetPosition(null);
             _isDragging = false;
         }
 
         private void Card_PreviewMouseMove(object sender, System.Windows.Input.MouseEventArgs e)
         {
-            if (_dragItem == null || _isDragging) return;
-            if (e.LeftButton != MouseButtonState.Pressed)
+            if (_dragItem == null) return;
+            if (!_isDragging)
             {
-                _dragItem = null;
-                return;
+                if (e.LeftButton != MouseButtonState.Pressed) { ResetDrag(); return; }
+                var diff = e.GetPosition(null) - _dragStartPoint;
+                if (diff.Length < DragThreshold) return;
+                BeginDrag();
+                if (!_isDragging) return;
             }
-            var diff = e.GetPosition(null) - _dragStartPoint;
-            if (diff.Length < DragThreshold) return;
-
-            _isDragging = true;
-            var border = (Border)sender;
-            border.Opacity = 0.55; // 拖起时源卡片半透明，跟随光标的系统拖影作为视觉反馈
-            try
+            if (_dragSourceBorder == null || _dragHost == null) return;
+            // 被拖卡片悬浮跟随光标
+            var delta = e.GetPosition(null) - _dragStartPoint;
+            var tt = EnsureTranslate(_dragSourceBorder);
+            tt.X = delta.X; tt.Y = delta.Y;
+            // 计算落点并刷新避让
+            int target = ComputeTargetIndex(e.GetPosition(_dragHost));
+            if (target != _dragTargetIndex)
             {
-                System.Windows.DragDrop.DoDragDrop(border, _dragItem, DragDropEffects.Move);
-            }
-            finally
-            {
-                border.Opacity = 1;
-                if (_lastDragOver != null) { _lastDragOver.Opacity = 1; _lastDragOver = null; }
-                _isDragging = false;
+                _dragTargetIndex = target;
+                UpdateAvoidance();
             }
         }
 
         private void Card_PreviewMouseUp(object sender, MouseButtonEventArgs e)
         {
-            if (!_isDragging) _dragItem = null;
-        }
-
-        private void Card_DragOver(object sender, DragEventArgs e)
-        {
-            if (_dragItem == null) { e.Effects = DragDropEffects.None; e.Handled = true; return; }
-            e.Effects = DragDropEffects.Move;
-            e.Handled = true;
-            var border = sender as Border;
-            if (border == null || border == _lastDragOver) return;
-            if (_lastDragOver != null) _lastDragOver.Opacity = 1;
-            _lastDragOver = border;
-            border.Opacity = 0.7; // 高亮当前悬停的目标卡片
-        }
-
-        private void Card_DragLeave(object sender, DragEventArgs e)
-        {
-            var border = sender as Border;
-            if (border != null && border == _lastDragOver)
-            {
-                border.Opacity = 1;
-                _lastDragOver = null;
-            }
-        }
-
-        private void Card_Drop(object sender, DragEventArgs e)
-        {
-            var target = (sender as FrameworkElement)?.DataContext;
-            if (_lastDragOver != null) { _lastDragOver.Opacity = 1; _lastDragOver = null; }
+            if (!_isDragging) { ResetDrag(); return; }
+            int insertIndex = _dragTargetIndex < 0 ? _dragOriginalIndex : _dragTargetIndex;
             var source = _dragItem;
+            int orig = _dragOriginalIndex;
+            if (_dragSourceBorder != null)
+            {
+                System.Windows.Controls.Panel.SetZIndex(_dragSourceBorder, 0);
+                _dragSourceBorder.Opacity = 1;
+                _dragSourceBorder.RenderTransform = null;
+                try { _dragSourceBorder.ReleaseMouseCapture(); } catch { }
+            }
+            _isDragging = false;
             _dragItem = null;
-            if (source == null || target == null || ReferenceEquals(source, target)) return;
-            ReorderByDrag(source, target);
-            e.Handled = true;
+            if (source != null && orig >= 0 && insertIndex != orig)
+                ReorderByDrag(source, orig, insertIndex);
+            ClearAvoidanceTransforms();
+            _dragItems = null; _dragBorders = null; _dragOrigPos = null;
+            _dragHost = null; _dragSourceBorder = null;
+            _dragOriginalIndex = -1; _dragTargetIndex = -1;
         }
 
         private static bool IsDragFromControl(object originalSource)
@@ -1139,34 +1134,187 @@ namespace DynamicWallpaper
             return false;
         }
 
-        /// <summary>把 source 移动到 target 在集合中的位置（插入到 target 之前），并持久化新顺序。</summary>
-        private void ReorderByDrag(object source, object target)
+        /// <summary>把 source 从第 orig 位移动到最终位置 insertIndex（0-based），并持久化新顺序。</summary>
+        private void ReorderByDrag(object source, int orig, int insertIndex)
         {
-            if (source is WallpaperItem wi && target is WallpaperItem wt)
+            insertIndex = Math.Max(0, insertIndex);
+            if (source is WallpaperItem wi)
             {
-                int oldIndex = Library.IndexOf(wi);
-                if (oldIndex < 0) return;
-                Library.RemoveAt(oldIndex);
-                int ti = Library.IndexOf(wt);
-                if (ti < 0) ti = Library.Count;
-                Library.Insert(ti, wi);
+                int old = Library.IndexOf(wi);
+                if (old < 0) return;
+                Library.RemoveAt(old);
+                int ins = insertIndex > old ? insertIndex - 1 : insertIndex;
+                ins = Math.Max(0, Math.Min(ins, Library.Count));
+                Library.Insert(ins, wi);
                 _config.Library = Library.Select(i => i.Path).ToList();
                 _config.Save();
-                Logger.Log($"[Reorder] 壁纸库顺序已更新（{Path.GetFileName(wi.Path)} -> 第 {ti + 1} 位）");
+                Logger.Log($"[Reorder] 壁纸库顺序已更新（{Path.GetFileName(wi.Path)} -> 第 {ins + 1} 位）");
             }
-            else if (source is SlideshowFolderItem sf && target is SlideshowFolderItem st)
+            else if (source is SlideshowFolderItem sf)
             {
-                int oldIndex = SlideshowItems.IndexOf(sf);
-                if (oldIndex < 0) return;
-                SlideshowItems.RemoveAt(oldIndex);
-                int ti = SlideshowItems.IndexOf(st);
-                if (ti < 0) ti = SlideshowItems.Count;
-                SlideshowItems.Insert(ti, sf);
+                int old = SlideshowItems.IndexOf(sf);
+                if (old < 0) return;
+                SlideshowItems.RemoveAt(old);
+                int ins = insertIndex > old ? insertIndex - 1 : insertIndex;
+                ins = Math.Max(0, Math.Min(ins, SlideshowItems.Count));
+                SlideshowItems.Insert(ins, sf);
                 _config.CarouselFolders = SlideshowItems.OfType<SlideshowFolderItem>()
                     .Select(i => i.Folder).ToList();
                 _config.Save();
-                Logger.Log($"[Reorder] 幻灯片文件夹顺序已更新（{Path.GetFileName(sf.Folder)} -> 第 {ti + 1} 位）");
+                Logger.Log($"[Reorder] 幻灯片文件夹顺序已更新（{Path.GetFileName(sf.Folder)} -> 第 {ins + 1} 位）");
             }
+        }
+
+        // ---------- 自定义拖拽内部实现（避开 WPF DragDrop 子系统，避免与窗口级文件拖放冲突） ----------
+
+        private void BeginDrag()
+        {
+            var border = _dragSourceBorder;
+            var host = FindVisualAncestor<ItemsControl>(border);
+            if (border == null || host == null) { ResetDrag(); return; }
+            _dragHost = host;
+
+            var items = new List<object>();
+            var borders = new List<Border>();
+            foreach (var it in host.Items)
+            {
+                if (it is SlideshowAddItem) continue; // 占位“添加文件夹”卡始终在末尾，不参与排序
+                var container = host.ItemContainerGenerator.ContainerFromItem(it) as DependencyObject;
+                var b = container == null ? null : FindVisualChild<Border>(container);
+                if (b == null) continue;
+                items.Add(it); borders.Add(b);
+            }
+            _dragItems = items; _dragBorders = borders;
+            _dragOriginalIndex = items.IndexOf(_dragItem);
+            if (_dragOriginalIndex < 0) { ResetDrag(); return; }
+
+            var origPos = new List<System.Windows.Point>();
+            foreach (var b in borders) origPos.Add(b.TranslatePoint(new System.Windows.Point(0, 0), host));
+            _dragOrigPos = origPos;
+
+            int cols = 1;
+            while (cols < origPos.Count && Math.Abs(origPos[cols].Y - origPos[0].Y) < 1) cols++;
+            _dragCols = cols;
+            _dragStepX = cols > 1 ? (origPos[1].X - origPos[0].X) : (borders[0].ActualWidth + 12);
+            _dragStepY = origPos.Count > cols ? (origPos[cols].Y - origPos[0].Y) : (borders[0].ActualHeight + 12);
+
+            _dragTargetIndex = _dragOriginalIndex;
+            _isDragging = true;
+            border.Opacity = 0.85;
+            System.Windows.Controls.Panel.SetZIndex(border, 999);
+            foreach (var b in borders) EnsureTranslate(b);
+            try { border.CaptureMouse(); } catch { }
+            UpdateAvoidance();
+        }
+
+        /// <summary>根据鼠标在 host 内的位置，计算 source 的最终落点 index（0-based，范围 [0, n]）。</summary>
+        private int ComputeTargetIndex(System.Windows.Point hostPt)
+        {
+            if (_dragBorders == null || _dragOrigPos == null) return _dragOriginalIndex;
+            int n = _dragBorders.Count;
+            int best = -1; double bestDist = double.MaxValue;
+            for (int i = 0; i < n; i++)
+            {
+                var b = _dragBorders[i];
+                var rect = new Rect(_dragOrigPos[i].X, _dragOrigPos[i].Y, b.ActualWidth, b.ActualHeight);
+                if (rect.Contains(hostPt))
+                {
+                    bool after = hostPt.X > rect.X + rect.Width / 2 || hostPt.Y > rect.Y + rect.Height / 2;
+                    return Math.Min(after ? i + 1 : i, n);
+                }
+                var cx = rect.X + rect.Width / 2; var cy = rect.Y + rect.Height / 2;
+                double d = (hostPt.X - cx) * (hostPt.X - cx) + (hostPt.Y - cy) * (hostPt.Y - cy);
+                if (d < bestDist) { bestDist = d; best = i; }
+            }
+            if (best < 0) return n;
+            var rb = _dragBorders[best];
+            var rr = new Rect(_dragOrigPos[best].X, _dragOrigPos[best].Y, rb.ActualWidth, rb.ActualHeight);
+            bool after2 = hostPt.X > rr.X + rr.Width / 2 || hostPt.Y > rr.Y + rr.Height / 2;
+            return Math.Min(after2 ? best + 1 : best, n);
+        }
+
+        /// <summary>按当前 source 落点，平滑平移其余卡片让出空位（被拖卡除外）。</summary>
+        private void UpdateAvoidance()
+        {
+            if (_dragItems == null || _dragBorders == null || _dragOrigPos == null) return;
+            int n = _dragBorders.Count;
+            int orig = _dragOriginalIndex;
+            int target = Math.Max(0, Math.Min(_dragTargetIndex, n));
+            for (int i = 0; i < n; i++)
+            {
+                if (i == orig) continue;
+                int newIndex = i;
+                if (orig < i && i <= target) newIndex--;
+                else if (target <= i && i < orig) newIndex++;
+                int di = (newIndex / _dragCols) - (i / _dragCols);
+                int dj = (newIndex % _dragCols) - (i % _dragCols);
+                AnimateTranslate(_dragBorders[i], dj * _dragStepX, di * _dragStepY);
+            }
+        }
+
+        private static void AnimateTranslate(Border b, double ox, double oy)
+        {
+            var tt = EnsureTranslate(b);
+            var ax = new System.Windows.Media.Animation.DoubleAnimation(tt.X, ox, TimeSpan.FromMilliseconds(160))
+            { EasingFunction = new System.Windows.Media.Animation.QuadraticEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut } };
+            var ay = new System.Windows.Media.Animation.DoubleAnimation(tt.Y, oy, TimeSpan.FromMilliseconds(160))
+            { EasingFunction = new System.Windows.Media.Animation.QuadraticEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut } };
+            tt.BeginAnimation(System.Windows.Media.TranslateTransform.XProperty, ax);
+            tt.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty, ay);
+        }
+
+        private static System.Windows.Media.TranslateTransform EnsureTranslate(FrameworkElement fe)
+        {
+            if (fe.RenderTransform is System.Windows.Media.TranslateTransform t) return t;
+            t = new System.Windows.Media.TranslateTransform();
+            fe.RenderTransform = t;
+            return t;
+        }
+
+        private void ClearAvoidanceTransforms()
+        {
+            if (_dragBorders == null) return;
+            foreach (var b in _dragBorders)
+            {
+                try { b.RenderTransform = null; } catch { }
+            }
+        }
+
+        private void ResetDrag()
+        {
+            if (_dragSourceBorder != null)
+            {
+                _dragSourceBorder.Opacity = 1;
+                System.Windows.Controls.Panel.SetZIndex(_dragSourceBorder, 0);
+                _dragSourceBorder.RenderTransform = null;
+                try { _dragSourceBorder.ReleaseMouseCapture(); } catch { }
+            }
+            ClearAvoidanceTransforms();
+            _dragItem = null; _dragSourceBorder = null; _dragHost = null;
+            _dragItems = null; _dragBorders = null; _dragOrigPos = null;
+            _isDragging = false; _dragOriginalIndex = -1; _dragTargetIndex = -1;
+        }
+
+        private static T? FindVisualAncestor<T>(DependencyObject? o) where T : DependencyObject
+        {
+            while (o != null)
+            {
+                if (o is T t) return t;
+                o = System.Windows.Media.VisualTreeHelper.GetParent(o);
+            }
+            return null;
+        }
+
+        private static T? FindVisualChild<T>(DependencyObject? o) where T : DependencyObject
+        {
+            if (o == null) return null;
+            if (o is T t) return t;
+            for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(o); i++)
+            {
+                var c = FindVisualChild<T>(System.Windows.Media.VisualTreeHelper.GetChild(o, i));
+                if (c != null) return c;
+            }
+            return null;
         }
 
         /// <summary>构造“旋转”二级菜单（不旋转/顺时针/逆时针），按壁纸路径独立记录旋转角度，单次 90° 可叠加，>=360 归零。</summary>

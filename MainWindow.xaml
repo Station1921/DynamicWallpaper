@@ -521,7 +521,6 @@
                                             PreviewMouseLeftButtonDown="Card_PreviewMouseLeftDown"
                                             PreviewMouseMove="Card_PreviewMouseMove"
                                             PreviewMouseLeftButtonUp="Card_PreviewMouseUp"
-                                            DragOver="Card_DragOver" DragLeave="Card_DragLeave" Drop="Card_Drop"
                                             Style="{StaticResource Card}">
                                         <Grid>
                                             <!-- 把内容裁成与卡片内圆角一致，避免图片/黑底盖住圆角描边，造成"底边两个角被裁"的观感 -->
@@ -1121,7 +1120,6 @@
                                             PreviewMouseLeftButtonDown="Card_PreviewMouseLeftDown"
                                             PreviewMouseMove="Card_PreviewMouseMove"
                                             PreviewMouseLeftButtonUp="Card_PreviewMouseUp"
-                                            DragOver="Card_DragOver" DragLeave="Card_DragLeave" Drop="Card_Drop"
                                             Style="{StaticResource Card}" ToolTip="{Binding Folder}">
                                         <Grid>
                                             <Grid.Clip>
