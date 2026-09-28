@@ -35,6 +35,8 @@ namespace DynamicWallpaper.Core
         private readonly FullscreenMonitor _fs;
         private readonly PowerManager _power;
         private readonly System.Timers.Timer _watchdog = new(3000);
+        /// <summary>上次构建屏幕表时的拓扑签名，见 ScreensSignature()。</summary>
+        private string _lastScreenSig = "";
         /// <summary>串行化所有变更屏幕壁纸状态的操作（设置/清除/停止），防止启动自动恢复
         /// 与手动"设为壁纸"并发执行导致 Provider 被交叉 Dispose、渲染窗口被误关。</summary>
         private readonly SemaphoreSlim _screenOpLock = new(1, 1);
@@ -200,6 +202,19 @@ namespace DynamicWallpaper.Core
             _states.Clear();
             foreach (var sc in ScreenManager.GetScreens())
                 _states[sc.Index] = new ScreenState { Index = sc.Index, Bounds = sc.Bounds };
+            _lastScreenSig = ScreensSignature();
+        }
+
+        /// <summary>当前显示器拓扑签名（数量+各屏矩形+主屏标记），用于检测"数量不变但布局变化"
+        /// 的情况：笔记本外接 HDMI 后设主屏、改复制/扩展、分辨率变化等，屏幕数量可能不变。</summary>
+        private string ScreensSignature()
+        {
+            try
+            {
+                return string.Join("|", ScreenManager.GetScreens()
+                    .Select(s => $"{s.DeviceName}:{s.Bounds.X},{s.Bounds.Y},{s.Bounds.Width},{s.Bounds.Height}:{s.IsPrimary}"));
+            }
+            catch { return ""; }
         }
 
         public void Start()
@@ -482,6 +497,9 @@ namespace DynamicWallpaper.Core
                 try { _opCts?.Dispose(); } catch { }
                 _opCts = cts;
             }
+            // 排队留痕：锁被占用说明上一操作（如启动恢复）尚未完成，"点击无反应"时据此排查
+            if (_screenOpLock.CurrentCount == 0)
+                Logger.Log("[WallpaperManager] 操作排队等待串行锁（上一操作仍在执行）");
             await _screenOpLock.WaitAsync();
             return cts.Token;
         }
@@ -1276,17 +1294,47 @@ namespace DynamicWallpaper.Core
 
         private void WatchdogTick(object? sender, EventArgs e)
         {
-            // 显示器热插拔：屏幕数量变化时重建并按原分配恢复
-            if (ScreenManager.Count != _states.Count)
+            // 定时器在线程池线程上触发，而 Provider/WebView2 是 UI 线程对象：整体调度回 UI 线程
+            var disp = System.Windows.Application.Current?.Dispatcher;
+            if (disp != null && !disp.CheckAccess())
             {
+                disp.BeginInvoke(() => WatchdogTick(sender, e));
+                return;
+            }
+
+            // 显示器热插拔 / 拓扑变化：数量变化，或数量不变但矩形/主屏/设备变化
+            //（笔记本外接 HDMI 设主屏、复制↔扩展、改分辨率等都会命中后者）。
+            string sig;
+            try { sig = ScreensSignature(); } catch { return; }
+            if (ScreenManager.Count != _states.Count || sig != _lastScreenSig)
+            {
+                Logger.Log($"[Watchdog] 显示器拓扑变化，重建屏幕表并恢复壁纸：{_lastScreenSig} → {sig}");
+                // 重建前先销毁旧 Provider/静态层窗口，避免泄漏（旧窗口挂在 Progman 上
+                // 会以旧 bounds 继续解码播放，遮挡/干扰新窗口）
+                foreach (var st in _states.Values)
+                {
+                    try { st.Provider?.Dispose(); } catch { }
+                    st.Provider = null;
+                    st.IsStaticImage = false;
+                }
+                lock (_staticLock)
+                {
+                    foreach (var sp in _reusableStatic.Values)
+                    {
+                        try { sp.Dispose(); } catch { }
+                    }
+                    _reusableStatic.Clear();
+                }
                 var saved = _states.Values
-                    .Where(s => s.Provider != null || s.IsStaticImage)
+                    .Where(s => s.Provider != null || s.IsStaticImage || !string.IsNullOrEmpty(s.LastPath))
                     .ToDictionary(s => s.Index, s => (s.LastPath, s.LastType));
                 BuildScreens();
                 foreach (var kv in saved)
                 {
-                    if (_states.ContainsKey(kv.Key) && File.Exists(kv.Value.LastPath))
-                        _ = SetWallpaperAsync(kv.Value.LastPath, kv.Value.LastType, kv.Key, save: false);
+                    // 远程 URL 没有本地文件，与 Start() 恢复逻辑一致需加 IsRemoteUrl 判定
+                    if (_states.ContainsKey(kv.Key) &&
+                        (IsRemoteUrl(kv.Value.LastPath ?? "") || File.Exists(kv.Value.LastPath)))
+                        _ = SetWallpaperAsync(kv.Value.LastPath!, kv.Value.LastType, kv.Key, save: false);
                 }
                 _config.Save();
                 return;

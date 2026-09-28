@@ -384,9 +384,13 @@ namespace DynamicWallpaper.Providers
                 if (!tcs.Task.Result) return false; // 导航失败，页面不会有内容
                 try
                 {
+                    // 就绪 = 内容已解码可显示（readyState>=3，首帧可用）。
+                    // 注意不能要求"正在播放"：开机自启时锁屏（LockApp）常被误判为全屏而暂停壁纸，
+                    // 若就绪依赖 !paused，启动恢复会永远等不到就绪 → 串行锁被占死，
+                    // 之后所有"设为壁纸/解除"全部排队卡死（表现：只有切换动画、壁纸不显示）。
                     var script = _isImage
                         ? "var i=document.getElementById('i');(i&&i.complete&&i.naturalWidth>0)?'ok':'pending'"
-                        : "var v=document.getElementById('v');(v&&v.readyState>=3&&!v.paused&&v.currentTime>0)?'ok':'pending'";
+                        : "var v=document.getElementById('v');(v&&v.readyState>=3)?'ok':'pending'";
                     // ExecuteScriptAsync 必须回到 Controller 创建线程执行（跨线程抛 COM 异常）
                     var r = await RunOnUiThreadAsync(() => ctrl.CoreWebView2.ExecuteScriptAsync(script));
                     if (r != null && r.IndexOf("ok", StringComparison.OrdinalIgnoreCase) >= 0) return true;
