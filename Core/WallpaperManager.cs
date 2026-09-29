@@ -711,6 +711,20 @@ namespace DynamicWallpaper.Core
                             }
                         });
                     }
+                    // Win11 raised desktop（Progman 承载）下，WebView2 静态层作为 WS_EX_LAYERED 子窗口
+                    // 挂到 Progman 后 DWM 不会自动合成，必须强制一次 DWM 合成才显示（与视频同因同解）。
+                    // 仅 raised desktop 触发；经典 WorkerW 路径由 DWM 自动合成，无需此操作。
+                    if (WorkerWInjector.IsRaisedDesktop() && st.Provider is VideoProvider vpStaticForced)
+                    {
+                        var cHwnd = vpStaticForced.Handle;
+                        var cWorker = st.WorkerW;
+                        var cBounds = st.Bounds;
+                        _ = System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                        {
+                            if (st.Provider == vpStaticForced && cHwnd != IntPtr.Zero && cWorker != IntPtr.Zero)
+                                WorkerWInjector.ForceDwmComposition(cHwnd, cWorker, cBounds);
+                        });
+                    }
                     if (st.Provider == null) return;
 
                     // 销毁旧壁纸（动态 A 或旧静态层），静态 WebView2 层已就绪，无残留。
@@ -841,24 +855,38 @@ namespace DynamicWallpaper.Core
                 //    比固定延迟更可靠：大文件解码慢时不会错过触发时机。
                 _ = Task.Run(async () =>
                 {
-                    var videoProvider = st.Provider as VideoProvider;
-                    // WebView2 视频链路不需要「摘出→置顶→归位」强制合成（Lively 同款结构不做此操作）；
-                    // 只有旧 WPF MediaElement 视频（NeedsForcedComposition=true）才需要后续轮询 + 强制合成。
-                    if (videoProvider != null && !videoProvider.NeedsForcedComposition) return;
+                    var provider = st.Provider;
+                    var videoProvider = provider as VideoProvider;
+                    // Win11 raised desktop（Progman 承载）下，所有窗口型 Provider（视频/静态图均经
+                    // VideoProvider，网页等同样走 WebView2 窗口层）作为 WS_EX_LAYERED 子窗口挂到
+                    // Progman 后，DWM 不会自动合成其内容到桌面，必须显式触发一次
+                    // 「摘出→置顶→归位→图标层重绘」强制合成才能显示
+                    // （表现：Attach 成功、程序报已应用，但桌面仍是静态壁纸/黑屏）。
+                    // 经典 WorkerW 路径（非 raised）下 Lively 同款结构由 DWM 自动合成，仅旧
+                    // WPF MediaElement（NeedsForcedComposition=true）需要后续强制合成。
+                    bool raisedDesktop = WorkerWInjector.IsRaisedDesktop();
+                    bool needsForce = raisedDesktop || (videoProvider != null && videoProvider.NeedsForcedComposition);
+                    if (!needsForce) return;
+
+                    var dispatcher = System.Windows.Application.Current.Dispatcher;
                     var deadline = DateTime.UtcNow.AddSeconds(12);
+                    // raised desktop 且 Provider 非 VideoProvider（如网页层）时无 HasVideoContent 就绪
+                    // 信号，固定等待 3s 让 WebView2 渲染出首帧再强制合成。
+                    var fixedWaitUntil = DateTime.UtcNow.AddSeconds(raisedDesktop && videoProvider == null ? 3 : 0);
                     while (DateTime.UtcNow < deadline)
                     {
                         bool ready = false;
-                        if (st.Provider == videoProvider && videoProvider != null)
-                            ready = await System.Windows.Application.Current.Dispatcher.InvokeAsync(() => videoProvider.HasVideoContent());
+                        if (videoProvider != null && st.Provider == videoProvider)
+                            ready = await dispatcher.InvokeAsync(() => videoProvider.HasVideoContent());
                         if (ready) break;
+                        if (raisedDesktop && videoProvider == null && DateTime.UtcNow >= fixedWaitUntil) break;
                         await Task.Delay(500);
                     }
-                    await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                    await dispatcher.InvokeAsync(() =>
                     {
                         // 期间若已切换/清理壁纸（Provider 不再是同一个），跳过合成避免误操作
-                        if (st.Provider != videoProvider) return;
-                        var hwnd = st.Provider.Handle;
+                        if (st.Provider != provider) return;
+                        var hwnd = st.Provider?.Handle ?? IntPtr.Zero;
                         if (hwnd != IntPtr.Zero && st.WorkerW != IntPtr.Zero)
                         {
                             WorkerWInjector.ForceDwmComposition(hwnd, st.WorkerW, st.Bounds);
@@ -1329,12 +1357,23 @@ namespace DynamicWallpaper.Core
                     .Where(s => s.Provider != null || s.IsStaticImage || !string.IsNullOrEmpty(s.LastPath))
                     .ToDictionary(s => s.Index, s => (s.LastPath, s.LastType));
                 BuildScreens();
-                foreach (var kv in saved)
+                // “应用到所有屏幕”意图（DefaultScreen=-1）：拓扑变化（接/拔 HDMI、扩展↔复制、
+                // 仅主屏/仅副屏）后，任何“当前已连接但尚无本屏分配”的屏幕也要用任一已保存壁纸补齐，
+                // 否则新接入的副屏会一直空白（仅按旧索引恢复时漏掉它）。
+                bool applyAll = _config.DefaultScreen == -1;
+                foreach (var st in _states.Values)
                 {
-                    // 远程 URL 没有本地文件，与 Start() 恢复逻辑一致需加 IsRemoteUrl 判定
-                    if (_states.ContainsKey(kv.Key) &&
-                        (IsRemoteUrl(kv.Value.LastPath ?? "") || File.Exists(kv.Value.LastPath)))
-                        _ = SetWallpaperAsync(kv.Value.LastPath!, kv.Value.LastType, kv.Key, save: false);
+                    if (saved.TryGetValue(st.Index, out var a) &&
+                        (IsRemoteUrl(a.LastPath ?? "") || File.Exists(a.LastPath)))
+                    {
+                        _ = SetWallpaperAsync(a.LastPath!, a.LastType, st.Index, save: false);
+                    }
+                    else if (applyAll && saved.Count > 0)
+                    {
+                        var any = saved.Values.First();
+                        if (IsRemoteUrl(any.LastPath ?? "") || File.Exists(any.LastPath))
+                            _ = SetWallpaperAsync(any.LastPath!, any.LastType, st.Index, save: false);
+                    }
                 }
                 _config.Save();
                 return;

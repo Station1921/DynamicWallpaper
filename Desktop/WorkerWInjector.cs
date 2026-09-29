@@ -305,7 +305,7 @@ namespace DynamicWallpaper.Desktop
                     // 至少保证不盖住桌面图标，并打日志警告。
                     Logger.Log("[WorkerW] DefView 未出现且无法可靠定位壁纸层，child 置于 Z 序底部（HWND_BOTTOM），避免盖住桌面图标");
                     Win32.SetWindowPos(childHwnd, Win32.HWND_BOTTOM,
-                        0, 0, bounds.Width, bounds.Height,
+                        bounds.X, bounds.Y, bounds.Width, bounds.Height,
                         Win32.SWP_NOACTIVATE | Win32.SWP_NOOWNERZORDER | Win32.SWP_SHOWWINDOW);
                     Win32.SetWindowPos(parentHwnd, IntPtr.Zero, 0, 0, 0, 0,
                         Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOZORDER | Win32.SWP_FRAMECHANGED | Win32.SWP_SHOWWINDOW);
@@ -314,8 +314,14 @@ namespace DynamicWallpaper.Desktop
                 }
             }
 
+            // 关键：x/y 必须是屏幕在“虚拟桌面”中的真实坐标（bounds.X/Y），绝不能写死 0,0。
+            // 多屏扩展模式下主屏为 (0,0)、第二屏通常为 (3440,0) 等偏移；若写死 0,0，
+            // 副屏壁纸窗口会被错误地压到主屏左上角（与/或盖住主屏壁纸），副屏永远空白——
+            // 这正是“扩展模式仅主屏有壁纸、第二屏无壁纸 / 复制仅主屏有”的根因。
+            // 子窗口 SetParent 到 Progman 后，坐标相对 Progman 客户区，而 Progman 原点即虚拟 (0,0)，
+            // 因此用 bounds.X/Y 即可把窗口精确放到对应显示器上。
             Win32.SetWindowPos(childHwnd, insertAfter,
-                0, 0, bounds.Width, bounds.Height,
+                bounds.X, bounds.Y, bounds.Width, bounds.Height,
                 Win32.SWP_NOACTIVATE | Win32.SWP_NOOWNERZORDER | Win32.SWP_SHOWWINDOW);
 
             // 注：此处不再执行 HWND_TOP 置顶——实验证明子窗口状态下 HWND_TOP 无法触发
@@ -364,8 +370,9 @@ namespace DynamicWallpaper.Desktop
             IntPtr defView = FindShellDefViewUnderParent(parentHwnd);
             if (defView != IntPtr.Zero)
                 insertAfter = defView;
+            // 归位使用屏幕真实虚拟坐标 bounds.X/Y（与 Attach 一致），否则副屏壁纸会被重置回主屏 (0,0) 而再次空白。
             Win32.SetWindowPos(childHwnd, insertAfter,
-                0, 0, bounds.Width, bounds.Height,
+                bounds.X, bounds.Y, bounds.Width, bounds.Height,
                 Win32.SWP_NOACTIVATE | Win32.SWP_NOOWNERZORDER | Win32.SWP_SHOWWINDOW);
 
             // 4.1 归位后强制校验 Z 序：SetParent 回挂时 Windows 会把子窗口置到父窗口 Z 序顶部，
@@ -474,8 +481,9 @@ namespace DynamicWallpaper.Desktop
         /// <summary>检测当前桌面是否为 Win11 24H2+ raised desktop 模式。
         /// 判据：Progman 带 WS_EX_NOREDIRECTIONBITMAP 扩展样式（Lively 同款判据）。
         /// raised desktop 模式下真正承载桌面的是 Progman（DWM 直接合成其 WS_EX_LAYERED
-        /// 子窗口），传统孤儿 WorkerW 注入失效，必须走 raised desktop 兼容分支。</summary>
-        private static bool IsRaisedDesktop()
+        /// 子窗口），传统孤儿 WorkerW 注入失效，必须走 raised desktop 兼容分支。
+        /// 公开供 WallpaperManager 判定是否需要为窗口型 Provider 强制触发一次 DWM 合成。</summary>
+        public static bool IsRaisedDesktop()
         {
             IntPtr progman = Win32.FindWindow("Progman", null);
             if (progman == IntPtr.Zero) return false;
