@@ -1212,13 +1212,22 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <!-- 左侧：全局状态显示 -->
-                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" MinWidth="0">
-                    <TextBlock x:Name="StatusText" Text="当前：无" Foreground="#C8C8D2" FontSize="12" VerticalAlignment="Center" Margin="0,0,8,0" TextTrimming="CharacterEllipsis"/>
-                    <TextBlock x:Name="ScreenLabel" Text="屏幕" Foreground="#8A8A95" FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                    <TextBlock x:Name="ScreenText" Text="主屏" Foreground="#C8C8D2" FontSize="12" VerticalAlignment="Center" Margin="0,0,8,0" Visibility="Collapsed"/>
-                    <ComboBox x:Name="ScreenCombo" Style="{StaticResource Combo}" ItemContainerStyle="{StaticResource ComboItem}" Width="110" VerticalAlignment="Center" Visibility="Collapsed"/>
-                </StackPanel>
+                <!-- 左侧：全局状态显示。用 Grid 而不是横向 StackPanel：
+                     StatusText 放在 * 列里才能正确按可用宽度截断（TextTrimming 只在有宽度约束时生效）；
+                     若用 StackPanel，长壁纸名会以无限宽度撑开，把右侧的「屏幕」下拉挤到窗口外看不见。
+                     屏幕选择区（标签+下拉）放在 Auto 列，固定靠右、不被壁纸名长度影响。-->
+                <Grid Grid.Column="0" VerticalAlignment="Center">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="StatusText" Grid.Column="0" Text="当前：无" Foreground="#C8C8D2" FontSize="12" VerticalAlignment="Center" Margin="0,0,8,0" TextTrimming="CharacterEllipsis"/>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock x:Name="ScreenLabel" Text="屏幕" Foreground="#8A8A95" FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <TextBlock x:Name="ScreenText" Text="主屏" Foreground="#C8C8D2" FontSize="12" VerticalAlignment="Center" Margin="0,0,8,0" Visibility="Collapsed"/>
+                        <ComboBox x:Name="ScreenCombo" Style="{StaticResource Combo}" ItemContainerStyle="{StaticResource ComboItem}" Width="110" VerticalAlignment="Center" Visibility="Collapsed"/>
+                    </StackPanel>
+                </Grid>
 
                 <!-- 竖直分割线 -->
                 <Border Grid.Column="1" Width="1" Background="#3A3A45" Margin="8,1,8,1"/>
