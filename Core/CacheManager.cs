@@ -110,6 +110,9 @@ namespace DynamicWallpaper.Core
                     Logger.Log($"[Cache] 自动清理 {days} 天前缓存：删除 {count} 个文件，释放 {FormatSize(bytes)}");
                 else
                     Logger.Log($"[Cache] 自动清理检查完成：无超过 {days} 天的缓存文件");
+                // 自动清理周期同时清空日志文件：按用户设置“不出问题不需留档”，
+                // 日志随缓存一起回收，避免 app.log 无限增长。
+                Logger.Clear();
             }
             catch (Exception ex)
             {

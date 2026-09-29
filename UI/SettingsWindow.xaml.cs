@@ -55,7 +55,8 @@ namespace DynamicWallpaper.UI
             try
             {
                 var (count, bytes) = CacheManager.ClearAll();
-                CacheStatus.Text = $"已清除 {count} 个文件，释放 {CacheManager.FormatSize(bytes)}。";
+                Logger.Clear();
+                CacheStatus.Text = $"已清除 {count} 个文件，释放 {CacheManager.FormatSize(bytes)}（日志已清空）。";
                 RefreshCacheInfo();
             }
             catch (Exception ex)
