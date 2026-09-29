@@ -1,1 +1,150 @@
-dXNpbmcgU3lzdGVtLkNvbGxlY3Rpb25zLk9iamVjdE1vZGVsOwp1c2luZyBTeXN0ZW0uV2luZG93czsKdXNpbmcgU3lzdGVtLldpbmRvd3MuQ29udHJvbHM7CnVzaW5nIE1pY3Jvc29mdC5XaW4zMjsKdXNpbmcgRHluYW1pY1dhbGxwYXBlci5Db3JlOwoKbmFtZXNwYWNlIER5bmFtaWNXYWxscGFwZXIuVUkKewogICAgcHVibGljIHBhcnRpYWwgY2xhc3MgU2V0dGluZ3NXaW5kb3cgOiBXaW5kb3cKICAgIHsKICAgICAgICBwcml2YXRlIHJlYWRvbmx5IENvbmZpZyBfY29uZmlnOwogICAgICAgIHByaXZhdGUgcmVhZG9ubHkgV2FsbHBhcGVyTWFuYWdlciBfbWFuYWdlcjsKCiAgICAgICAgcHVibGljIFNldHRpbmdzV2luZG93KENvbmZpZyBjb25maWcsIFdhbGxwYXBlck1hbmFnZXIgbWFuYWdlcikKICAgICAgICB7CiAgICAgICAgICAgIC8vIOW/hemhu+WcqCBJbml0aWFsaXplQ29tcG9uZW50IOS5i+WJjei1i+WAvO+8mlhBTUwg5LitIFRleHRCb3gg5Yid5aeLIFRleHQg6LWL5YC85Lya6Kem5Y+RCiAgICAgICAgICAgIC8vIFRleHRDaGFuZ2Vk77yM5LqL5Lu25aSE55CG5Zmo5Lya6K6/6ZeuIF9jb25maWfvvIzmnKrotYvlgLzljbMgTnVsbFJlZmVyZW5jZUV4Y2VwdGlvbuOAggogICAgICAgICAgICBfY29uZmlnID0gY29uZmlnOwogICAgICAgICAgICBfbWFuYWdlciA9IG1hbmFnZXI7CiAgICAgICAgICAgIEluaXRpYWxpemVDb21wb25lbnQoKTsKCiAgICAgICAgICAgIC8vIOWFnOW6le+8mueql+WPo+mrmOW6puS4jei2hei/h+Wxj+W5leW3peS9nOWMuu+8iOato+W4uOWGheWuueiHqumAguW6lOaSkeW8gO+8jOS4jeS8muWHuueOsOa7muWKqOadoe+8iQogICAgICAgICAgICBNYXhIZWlnaHQgPSBTeXN0ZW1QYXJhbWV0ZXJzLldvcmtBcmVhLkhlaWdodDsKCiAgICAgICAgICAgIE11dGVCb3guSXNDaGVja2VkID0gX2NvbmZpZy5NdXRlOwogICAgICAgICAgICBGc0JveC5Jc0NoZWNrZWQgPSBfY29uZmlnLlBhdXNlT25GdWxsc2NyZWVuOwogICAgICAgICAgICBCYXRCb3guSXNDaGVja2VkID0gX2NvbmZpZy5QYXVzZU9uQmF0dGVyeTsKICAgICAgICAgICAgUGVyZkJveC5Jc0NoZWNrZWQgPSBfY29uZmlnLlBlcmZvcm1hbmNlTW9kZTsKICAgICAgICAgICAgU3RhcnRCb3guSXNDaGVja2VkID0gX2NvbmZpZy5SdW5PblN0YXJ0dXA7CiAgICAgICAgICAgIFRyYXlCb3guSXNDaGVja2VkID0gX2NvbmZpZy5DbG9zZVRvVHJheTsKCiAgICAgICAgICAgIC8vIOaMieiZmuaLn+ahjOmdouWIhuWIq+iusOW/huWjgee6uO+8muW8gOWFs+e7keWumiArIOWPr+eUqOaAp+aOoua1i++8iOS4jeaUr+aMgeeahOezu+e7n+emgeeUqO+8iQogICAgICAgICAgICBQZXJEZXNrdG9wQm94LklzQ2hlY2tlZCA9IF9jb25maWcuUGVyRGVza3RvcEVuYWJsZWQ7CiAgICAgICAgICAgIFBlckRlc2t0b3BCb3guSXNFbmFibGVkID0gVmlydHVhbERlc2t0b3AuSXNTdXBwb3J0ZWQoKTsKCiAgICAgICAgICAgIHN3aXRjaCAoX2NvbmZpZy5XYWxscGFwZXJGaXQpCiAgICAgICAgICAgIHsKICAgICAgICAgICAgICAgIGNhc2UgImZpdCI6IEZpdEZpdC5Jc0NoZWNrZWQgPSB0cnVlOyBicmVhazsKICAgICAgICAgICAgICAgIGNhc2UgImNlbnRlciI6IEZpdENlbnRlci5Jc0NoZWNrZWQgPSB0cnVlOyBicmVhazsKICAgICAgICAgICAgICAgIGRlZmF1bHQ6IEZpdEZpbGwuSXNDaGVja2VkID0gdHJ1ZTsgYnJlYWs7CiAgICAgICAgICAgIH0KCiAgICAgICAgICAgIC8vIOe8k+WtmOeuoeeQhu+8muWIneWni+WMluW8gOWFs+S4juS/neeVmeWkqeaVsO+8jOW5tuWIt+aWsOe8k+WtmOWNoOeUqOaYvuekugogICAgICAgICAgICBBdXRvQ2xlYW5Cb3guSXNDaGVja2VkID0gX2NvbmZpZy5BdXRvQ2xlYW5DYWNoZTsKICAgICAgICAgICAgUmV0ZW50aW9uRGF5c0JveC5UZXh0ID0gX2NvbmZpZy5DYWNoZVJldGVudGlvbkRheXMuVG9TdHJpbmcoKTsKICAgICAgICAgICAgUmVmcmVzaENhY2hlSW5mbygpOwogICAgICAgIH0KCiAgICAgICAgLy8vIDxzdW1tYXJ5PuWIt+aWsOOAjOW9k+WJjee8k+WtmOWNoOeUqOOAjeivtOaYjuaWh+Wtl+OAgjwvc3VtbWFyeT4KICAgICAgICBwcml2YXRlIHZvaWQgUmVmcmVzaENhY2hlSW5mbygpCiAgICAgICAgewogICAgICAgICAgICB2YXIgKGNvdW50LCBieXRlcykgPSBDYWNoZU1hbmFnZXIuR2V0U3RhdHMoKTsKICAgICAgICAgICAgQ2FjaGVJbmZvLlRleHQgPSAkIuW9k+WJjee8k+WtmOWNoOeUqO+8mntDYWNoZU1hbmFnZXIuRm9ybWF0U2l6ZShieXRlcyl977yIe2NvdW50fSDkuKrmlofku7bvvInjgIIiICsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAi5riF6Zmk5Y+q5Yig6Zmk57yp55Wl5Zu+5LiO5oKs5YGc6aKE6KeI57yT5a2Y77yM5LiN5b2x5ZON5bey5LiL6L2955qE5aOB57q444CCIjsKICAgICAgICB9CgogICAgICAgIHByaXZhdGUgdm9pZCBDbGVhckNhY2hlX0NsaWNrKG9iamVjdCBzZW5kZXIsIFJvdXRlZEV2ZW50QXJncyBlKQogICAgICAgIHsKICAgICAgICAgICAgdHJ5CiAgICAgICAgICAgIHsKICAgICAgICAgICAgICAgIHZhciAoY291bnQsIGJ5dGVzKSA9IENhY2hlTWFuYWdlci5DbGVhckFsbCgpOwogICAgICAgICAgICAgICAgTG9nZ2VyLkNsZWFyKCk7CiAgICAgICAgICAgICAgICBDYWNoZVN0YXR1cy5UZXh0ID0gJCLlt7LmuIXpmaQge2NvdW50fSDkuKrmlofku7bvvIzph4rmlL4ge0NhY2hlTWFuYWdlci5Gb3JtYXRTaXplKGJ5dGVzKX3vvIjml6Xlv5flt7LmuIXnqbrvvInjgIIiOwogICAgICAgICAgICAgICAgUmVmcmVzaENhY2hlSW5mbygpOwogICAgICAgICAgICB9CiAgICAgICAgICAgIGNhdGNoIChFeGNlcHRpb24gZXgpCiAgICAgICAgICAgIHsKICAgICAgICAgICAgICAgIENhY2hlU3RhdHVzLlRleHQgPSAi5riF6Zmk57yT5a2Y5pe25Ye66ZSZ77yaIiArIGV4Lk1lc3NhZ2U7CiAgICAgICAgICAgIH0KICAgICAgICB9CgogICAgICAgIHByaXZhdGUgdm9pZCBBdXRvQ2xlYW5fQ2hhbmdlZChvYmplY3Qgc2VuZGVyLCBSb3V0ZWRFdmVudEFyZ3MgZSkKICAgICAgICB7CiAgICAgICAgICAgIF9jb25maWcuQXV0b0NsZWFuQ2FjaGUgPSBBdXRvQ2xlYW5Cb3guSXNDaGVja2VkID09IHRydWU7CiAgICAgICAgICAgIGlmIChpbnQuVHJ5UGFyc2UoUmV0ZW50aW9uRGF5c0JveC5UZXh0LCBvdXQgdmFyIGQpICYmIGQgPiAwKQogICAgICAgICAgICAgICAgX2NvbmZpZy5DYWNoZVJldGVudGlvbkRheXMgPSBkOwogICAgICAgICAgICBfY29uZmlnLlNhdmUoKTsKICAgICAgICB9CgogICAgICAgIHByaXZhdGUgdm9pZCBSZXRlbnRpb25EYXlzX0NoYW5nZWQob2JqZWN0IHNlbmRlciwgVGV4dENoYW5nZWRFdmVudEFyZ3MgZSkKICAgICAgICB7CiAgICAgICAgICAgIGlmIChfY29uZmlnID09IG51bGwpIHJldHVybjsgLy8g5Y+M5L+d6Zmp77ya5Yid5aeL5YyW5pep5pyf5LqL5Lu2CiAgICAgICAgICAgIGlmIChpbnQuVHJ5UGFyc2UoUmV0ZW50aW9uRGF5c0JveC5UZXh0LCBvdXQgdmFyIGQpICYmIGQgPiAwKQogICAgICAgICAgICB7CiAgICAgICAgICAgICAgICBfY29uZmlnLkNhY2hlUmV0ZW50aW9uRGF5cyA9IGQ7CiAgICAgICAgICAgICAgICBfY29uZmlnLlNhdmUoKTsKICAgICAgICAgICAgfQogICAgICAgIH0KCiAgICAgICAgLy8vIDxzdW1tYXJ5PumZkOWItuS/neeVmeWkqeaVsOi+k+WFpeahhuS7heaOpeWPl+aVsOWtl++8iOWQq+eymOi0tC9JTUUg6L6T5YWl77yJ44CCPC9zdW1tYXJ5PgogICAgICAgIHByaXZhdGUgdm9pZCBOdW1iZXJPbmx5X1ByZXZpZXcob2JqZWN0IHNlbmRlciwgU3lzdGVtLldpbmRvd3MuSW5wdXQuVGV4dENvbXBvc2l0aW9uRXZlbnRBcmdzIGUpCiAgICAgICAgewogICAgICAgICAgICBmb3JlYWNoICh2YXIgYyBpbiBlLlRleHQpCiAgICAgICAgICAgIHsKICAgICAgICAgICAgICAgIGlmICghY2hhci5Jc0RpZ2l0KGMpKQogICAgICAgICAgICAgICAgewogICAgICAgICAgICAgICAgICAgIGUuSGFuZGxlZCA9IHRydWU7CiAgICAgICAgICAgICAgICAgICAgYnJlYWs7CiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgIH0KICAgICAgICB9CgogICAgICAgIHByb3RlY3RlZCBvdmVycmlkZSB2b2lkIE9uU291cmNlSW5pdGlhbGl6ZWQoRXZlbnRBcmdzIGUpCiAgICAgICAgewogICAgICAgICAgICBiYXNlLk9uU291cmNlSW5pdGlhbGl6ZWQoZSk7CiAgICAgICAgICAgIHRyeQogICAgICAgICAgICB7CiAgICAgICAgICAgICAgICB2YXIgaHduZCA9IG5ldyBTeXN0ZW0uV2luZG93cy5JbnRlcm9wLldpbmRvd0ludGVyb3BIZWxwZXIodGhpcykuSGFuZGxlOwogICAgICAgICAgICAgICAgaWYgKGh3bmQgIT0gSW50UHRyLlplcm8pCiAgICAgICAgICAgICAgICAgICAgRHluYW1pY1dhbGxwYXBlci5EZXNrdG9wLldpbjMyLkFwcGx5RHdtRGFya0Nocm9tZShod25kKTsKICAgICAgICAgICAgfQogICAgICAgICAgICBjYXRjaCB7IC8qIERXTSDlsZ7mgKfkuI3mlK/mjIHnmoTml6fns7vnu5/kuIrpnZnpu5jlv73nlaUgKi8gfQogICAgICAgIH0KCiAgICAgICAgcHJpdmF0ZSB2b2lkIE11dGVfQ2hhbmdlZChvYmplY3Qgc2VuZGVyLCBSb3V0ZWRFdmVudEFyZ3MgZSkgPT4gX21hbmFnZXIuU2V0TXV0ZShNdXRlQm94LklzQ2hlY2tlZCA9PSB0cnVlKTsKICAgICAgICBwcml2YXRlIHZvaWQgRnNfQ2hhbmdlZChvYmplY3Qgc2VuZGVyLCBSb3V0ZWRFdmVudEFyZ3MgZSkgPT4gX21hbmFnZXIuU2V0UGF1c2VPbkZ1bGxzY3JlZW4oRnNCb3guSXNDaGVja2VkID09IHRydWUpOwogICAgICAgIHByaXZhdGUgdm9pZCBCYXRfQ2hhbmdlZChvYmplY3Qgc2VuZGVyLCBSb3V0ZWRFdmVudEFyZ3MgZSkgPT4gX21hbmFnZXIuU2V0UGF1c2VPbkJhdHRlcnkoQmF0Qm94LklzQ2hlY2tlZCA9PSB0cnVlKTsKICAgICAgICBwcml2YXRlIHZvaWQgUGVyZl9DaGFuZ2VkKG9iamVjdCBzZW5kZXIsIFJvdXRlZEV2ZW50QXJncyBlKSA9PiBfbWFuYWdlci5TZXRQZXJmb3JtYW5jZU1vZGUoUGVyZkJveC5Jc0NoZWNrZWQgPT0gdHJ1ZSk7CiAgICAgICAgcHJpdmF0ZSB2b2lkIFN0YXJ0X0NoYW5nZWQob2JqZWN0IHNlbmRlciwgUm91dGVkRXZlbnRBcmdzIGUpCiAgICAgICAgewogICAgICAgICAgICBfY29uZmlnLlJ1bk9uU3RhcnR1cCA9IFN0YXJ0Qm94LklzQ2hlY2tlZCA9PSB0cnVlOwogICAgICAgICAgICBfY29uZmlnLlNhdmUoKTsKICAgICAgICAgICAgTG9nZ2VyLkxvZygkIltTZXR0aW5nc10g5byA5py66Ieq5ZCv5byA5YWz77yae19jb25maWcuUnVuT25TdGFydHVwfe+8jOazqOWGjOihqOWunumZheeKtuaAge+8mntfY29uZmlnLklzU3RhcnR1cFJlZ2lzdGVyZWQoKX0iKTsKICAgICAgICB9CgogICAgICAgIHByaXZhdGUgdm9pZCBUcmF5X0NoYW5nZWQob2JqZWN0IHNlbmRlciwgUm91dGVkRXZlbnRBcmdzIGUpCiAgICAgICAgewogICAgICAgICAgICBfY29uZmlnLkNsb3NlVG9UcmF5ID0gVHJheUJveC5Jc0NoZWNrZWQgPT0gdHJ1ZTsKICAgICAgICAgICAgX2NvbmZpZy5TYXZlKCk7CiAgICAgICAgfQoKICAgICAgICBwcml2YXRlIHZvaWQgUGVyRGVza3RvcF9DaGFuZ2VkKG9iamVjdCBzZW5kZXIsIFJvdXRlZEV2ZW50QXJncyBlKQogICAgICAgIHsKICAgICAgICAgICAgaWYgKCFWaXJ0dWFsRGVza3RvcC5Jc1N1cHBvcnRlZCgpKSByZXR1cm47CiAgICAgICAgICAgIF9jb25maWcuUGVyRGVza3RvcEVuYWJsZWQgPSBQZXJEZXNrdG9wQm94LklzQ2hlY2tlZCA9PSB0cnVlOwogICAgICAgICAgICBfY29uZmlnLlNhdmUoKTsKICAgICAgICAgICAgX21hbmFnZXIuQXBwbHlQZXJEZXNrdG9wU2V0dGluZ3MoKTsKICAgICAgICB9CgogICAgICAgIHByaXZhdGUgdm9pZCBGaXRfQ2hhbmdlZChvYmplY3Qgc2VuZGVyLCBSb3V0ZWRFdmVudEFyZ3MgZSkKICAgICAgICB7CiAgICAgICAgICAgIHN0cmluZyBmaXQgPSBGaXRGaWxsLklzQ2hlY2tlZCA9PSB0cnVlID8gImZpbGwiCiAgICAgICAgICAgICAgICA6IEZpdEZpdC5Jc0NoZWNrZWQgPT0gdHJ1ZSA/ICJmaXQiCiAgICAgICAgICAgICAgICA6ICJjZW50ZXIiOwogICAgICAgICAgICBfY29uZmlnLldhbGxwYXBlckZpdCA9IGZpdDsKICAgICAgICAgICAgX2NvbmZpZy5TYXZlKCk7CiAgICAgICAgICAgIF9tYW5hZ2VyLlN5bmNGaXRNb2RlKCk7CiAgICAgICAgfQogICAgfQp9Cg==
+using System.Collections.ObjectModel;
+using System.Windows;
+using System.Windows.Controls;
+using Microsoft.Win32;
+using DynamicWallpaper.Core;
+
+namespace DynamicWallpaper.UI
+{
+    public partial class SettingsWindow : Window
+    {
+        private readonly Config _config;
+        private readonly WallpaperManager _manager;
+
+        public SettingsWindow(Config config, WallpaperManager manager)
+        {
+            // 必须在 InitializeComponent 之前赋值：XAML 中 TextBox 初始 Text 赋值会触发
+            // TextChanged，事件处理器会访问 _config，未赋值即 NullReferenceException。
+            _config = config;
+            _manager = manager;
+            InitializeComponent();
+
+            // 兜底：窗口高度不超过屏幕工作区（正常内容自适应撑开，不会出现滚动条）
+            MaxHeight = SystemParameters.WorkArea.Height;
+
+            MuteBox.IsChecked = _config.Mute;
+            FsBox.IsChecked = _config.PauseOnFullscreen;
+            BatBox.IsChecked = _config.PauseOnBattery;
+            PerfBox.IsChecked = _config.PerformanceMode;
+            StartBox.IsChecked = _config.RunOnStartup;
+            TrayBox.IsChecked = _config.CloseToTray;
+
+            // 按虚拟桌面分别记忆壁纸：开关绑定 + 可用性探测（不支持的系统禁用）
+            PerDesktopBox.IsChecked = _config.PerDesktopEnabled;
+            PerDesktopBox.IsEnabled = VirtualDesktop.IsSupported();
+
+            switch (_config.WallpaperFit)
+            {
+                case "fit": FitFit.IsChecked = true; break;
+                case "center": FitCenter.IsChecked = true; break;
+                default: FitFill.IsChecked = true; break;
+            }
+
+            // 缓存管理：初始化开关与保留天数，并刷新缓存占用显示
+            AutoCleanBox.IsChecked = _config.AutoCleanCache;
+            RetentionDaysBox.Text = _config.CacheRetentionDays.ToString();
+            RefreshCacheInfo();
+        }
+
+        /// <summary>刷新「当前缓存占用」说明文字。</summary>
+        private void RefreshCacheInfo()
+        {
+            var (count, bytes) = CacheManager.GetStats();
+            CacheInfo.Text = $"当前缓存占用：{CacheManager.FormatSize(bytes)}（{count} 个文件）。" +
+                             "清除只删除缩略图与悬停预览缓存，不影响已下载的壁纸。";
+        }
+
+        private void ClearCache_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var (count, bytes) = CacheManager.ClearAll();
+                Logger.Clear();
+                CacheStatus.Text = $"已清除 {count} 个文件，释放 {CacheManager.FormatSize(bytes)}（日志已清空）。";
+                RefreshCacheInfo();
+            }
+            catch (Exception ex)
+            {
+                CacheStatus.Text = "清除缓存时出错：" + ex.Message;
+            }
+        }
+
+        private void AutoClean_Changed(object sender, RoutedEventArgs e)
+        {
+            _config.AutoCleanCache = AutoCleanBox.IsChecked == true;
+            if (int.TryParse(RetentionDaysBox.Text, out var d) && d > 0)
+                _config.CacheRetentionDays = d;
+            _config.Save();
+        }
+
+        private void RetentionDays_Changed(object sender, TextChangedEventArgs e)
+        {
+            if (_config == null) return; // 双保险：初始化早期事件
+            if (int.TryParse(RetentionDaysBox.Text, out var d) && d > 0)
+            {
+                _config.CacheRetentionDays = d;
+                _config.Save();
+            }
+        }
+
+        /// <summary>限制保留天数输入框仅接受数字（含粘贴/IME 输入）。</summary>
+        private void NumberOnly_Preview(object sender, System.Windows.Input.TextCompositionEventArgs e)
+        {
+            foreach (var c in e.Text)
+            {
+                if (!char.IsDigit(c))
+                {
+                    e.Handled = true;
+                    break;
+                }
+            }
+        }
+
+        protected override void OnSourceInitialized(EventArgs e)
+        {
+            base.OnSourceInitialized(e);
+            try
+            {
+                var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+                if (hwnd != IntPtr.Zero)
+                    DynamicWallpaper.Desktop.Win32.ApplyDwmDarkChrome(hwnd);
+            }
+            catch { /* DWM 属性不支持的旧系统上静默忽略 */ }
+        }
+
+        private void Mute_Changed(object sender, RoutedEventArgs e) => _manager.SetMute(MuteBox.IsChecked == true);
+        private void Fs_Changed(object sender, RoutedEventArgs e) => _manager.SetPauseOnFullscreen(FsBox.IsChecked == true);
+        private void Bat_Changed(object sender, RoutedEventArgs e) => _manager.SetPauseOnBattery(BatBox.IsChecked == true);
+        private void Perf_Changed(object sender, RoutedEventArgs e) => _manager.SetPerformanceMode(PerfBox.IsChecked == true);
+        private void Start_Changed(object sender, RoutedEventArgs e)
+        {
+            _config.RunOnStartup = StartBox.IsChecked == true;
+            _config.Save();
+            Logger.Log($"[Settings] 开机自启开关：{_config.RunOnStartup}，注册表实际状态：{_config.IsStartupRegistered()}");
+        }
+
+        private void Tray_Changed(object sender, RoutedEventArgs e)
+        {
+            _config.CloseToTray = TrayBox.IsChecked == true;
+            _config.Save();
+        }
+
+        private void PerDesktop_Changed(object sender, RoutedEventArgs e)
+        {
+            if (!VirtualDesktop.IsSupported()) return;
+            _config.PerDesktopEnabled = PerDesktopBox.IsChecked == true;
+            _config.Save();
+            _manager.ApplyPerDesktopSettings();
+        }
+
+        private void Fit_Changed(object sender, RoutedEventArgs e)
+        {
+            string fit = FitFill.IsChecked == true ? "fill"
+                : FitFit.IsChecked == true ? "fit"
+                : "center";
+            _config.WallpaperFit = fit;
+            _config.Save();
+            _manager.SyncFitMode();
+        }
+    }
+}
