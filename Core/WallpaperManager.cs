@@ -234,16 +234,18 @@ namespace DynamicWallpaper.Core
             // 预热 WebView2 Environment，加快首次设置视频壁纸的响应
             VideoProvider.Prewarm();
 
-            // 恢复已保存的每屏分配
+            // 恢复已保存的每屏分配。
+            // 注意：多屏恢复必须逐屏顺序 await，绝不能并发发起——SetWallpaperAsync 排队等锁时
+            // 会取消"上一个进行中的操作"（手动打断加载机制），并发恢复会互相取消，
+            // 导致只有最后一屏恢复成功、其余屏看起来"壁纸自己解除"。
             if (_config.Assignments != null)
             {
-                foreach (var a in _config.Assignments)
-                {
-                    // 远程 URL（http/https）没有本地文件，File.Exists 会误判不存在而跳过，
-                    // 因此加 IsRemoteUrl 判定，保证在线壁纸也能在启动时自动恢复。
-                    if (_states.ContainsKey(a.Index) && (IsRemoteUrl(a.Path) || File.Exists(a.Path)))
-                        _ = SetWallpaperAsync(a.Path, a.Type, a.Index, save: false);
-                }
+                var plan = _config.Assignments
+                    .Where(a => _states.ContainsKey(a.Index) && (IsRemoteUrl(a.Path) || File.Exists(a.Path)))
+                    .Select(a => (a.Path, a.Type, a.Index))
+                    .ToList();
+                if (plan.Count > 0)
+                    _ = ApplyRestorePlanAsync(plan);
                 _config.Save();
             }
 
@@ -502,6 +504,25 @@ namespace DynamicWallpaper.Core
                 Logger.Log("[WallpaperManager] 操作排队等待串行锁（上一操作仍在执行）");
             await _screenOpLock.WaitAsync();
             return cts.Token;
+        }
+
+        /// <summary>按计划逐屏顺序恢复壁纸（await 串行，前一个完成才发起下一个）。
+        /// 多屏恢复绝不能并发发起：SetWallpaperAsync 排队等锁时会取消"上一个进行中的操作"
+        /// （手动打断加载机制），并发恢复会互相取消，导致只有最后一屏恢复成功、
+        /// 其余屏看起来"壁纸自己解除"（系统调换屏幕位置/改主屏后壁纸丢失的根因）。</summary>
+        private async Task ApplyRestorePlanAsync(List<(string Path, WallpaperType Type, int Index)> plan)
+        {
+            foreach (var (path, type, index) in plan)
+            {
+                try
+                {
+                    await SetWallpaperAsync(path, type, index, save: false);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"[WallpaperManager] 恢复屏幕 {index} 壁纸失败: {ex.Message}");
+                }
+            }
         }
 
         /// <summary>将指定内容设为某屏壁纸。screenIndex 默认 0（主屏）。
@@ -1375,20 +1396,25 @@ namespace DynamicWallpaper.Core
                 // 仅主屏/仅副屏）后，任何“当前已连接但尚无本屏分配”的屏幕也要用任一已保存壁纸补齐，
                 // 否则新接入的副屏会一直空白（仅按旧索引恢复时漏掉它）。
                 bool applyAll = _config.DefaultScreen == -1;
+                // 恢复计划先收集、再逐屏顺序执行（同 Start() 恢复：并发发起会互相取消，
+                // 只有最后一屏能活——系统里调换屏幕位置后主屏壁纸"自己解除"的根因）。
+                var restorePlan = new List<(string Path, WallpaperType Type, int Index)>();
                 foreach (var st in _states.Values)
                 {
                     if (saved.TryGetValue(st.Index, out var a) &&
                         (IsRemoteUrl(a.LastPath ?? "") || File.Exists(a.LastPath)))
                     {
-                        _ = SetWallpaperAsync(a.LastPath!, a.LastType, st.Index, save: false);
+                        restorePlan.Add((a.LastPath!, a.LastType, st.Index));
                     }
                     else if (applyAll && saved.Count > 0)
                     {
                         var any = saved.Values.First();
                         if (IsRemoteUrl(any.LastPath ?? "") || File.Exists(any.LastPath))
-                            _ = SetWallpaperAsync(any.LastPath!, any.LastType, st.Index, save: false);
+                            restorePlan.Add((any.LastPath!, any.LastType, st.Index));
                     }
                 }
+                if (restorePlan.Count > 0)
+                    _ = ApplyRestorePlanAsync(restorePlan);
                 _config.Save();
                 return;
             }
