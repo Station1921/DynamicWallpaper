@@ -408,18 +408,52 @@ namespace DynamicWallpaper.Desktop
             //    确保视频就绪后 DWM 真正把壁纸子窗口合成到桌面。
             //    注意：仅做显示开关，不销毁、不改样式，图标层会瞬闪后恢复，不影响使用。
             IntPtr defViewForRefresh = defView != IntPtr.Zero ? defView : FindTopLevelDefView();
-            if (defViewForRefresh != IntPtr.Zero)
-            {
-                Logger.Log($"[WorkerW] 触发图标层重绘: DefView=0x{defViewForRefresh.ToInt64():X}（SW_HIDE→SW_SHOWNORMAL）");
-                Win32.ShowWindow(defViewForRefresh, Win32.SW_HIDE);
-                Win32.ShowWindow(defViewForRefresh, Win32.SW_SHOWNORMAL);
-            }
-            else
-            {
-                Logger.Log("[WorkerW] 未找到 SHELLDLL_DefView，跳过图标层重绘");
-            }
+            SafeIconLayerRefresh(defViewForRefresh, "触发图标层重绘");
 
             Logger.Log("[WorkerW] 强制 DWM 合成完成（摘出→置顶→归位→图标层重绘）");
+        }
+
+        private static readonly object _iconRefreshLock = new object();
+
+        /// <summary>
+        /// 安全触发图标层（SHELLDLL_DefView）重绘。
+        /// ⚠️ DefView 是**所有屏幕 + 所有虚拟桌面共享**的同一个窗口，绝不能把它留在隐藏态，
+        /// 否则全部桌面的桌面图标都会消失，直到下次重绘（"设置第二个桌面壁纸后所有桌面都看不到
+        /// 图标、解除才恢复"的根因）。
+        /// 原实现 SW_HIDE→SW_SHOWNORMAL 在快速连续切换虚拟桌面（多次 ForceDwmComposition 并发）
+        /// 时会交错执行，两次 hide 配一次 show 就可能把 DefView 卡在隐藏态。
+        /// 这里：① 全局加锁把重绘串行化；② hide 后短暂让出消息处理，避免 show 被合并；
+        /// ③ 显式用 SW_SHOW（不改尺寸/位置/激活）；④ 校验可见性并自愈重试。
+        /// </summary>
+        private static void SafeIconLayerRefresh(IntPtr defView, string logTag)
+        {
+            if (defView == IntPtr.Zero)
+            {
+                Logger.Log("[WorkerW] 未找到 SHELLDLL_DefView，跳过重绘");
+                return;
+            }
+            lock (_iconRefreshLock)
+            {
+                try
+                {
+                    Logger.Log($"[WorkerW] {logTag}: DefView=0x{defView.ToInt64():X}（SW_HIDE→SW_SHOW）");
+                    Win32.ShowWindow(defView, Win32.SW_HIDE);
+                    System.Threading.Thread.Sleep(16); // 让 hide 先被处理，避免与 show 合并
+                    Win32.ShowWindow(defView, Win32.SW_SHOW);
+                    // 自愈：若因并发/系统异步副作用仍不可见，则重试直至可见
+                    for (int i = 0; i < 6 && !Win32.IsWindowVisible(defView); i++)
+                    {
+                        System.Threading.Thread.Sleep(20);
+                        Win32.ShowWindow(defView, Win32.SW_SHOW);
+                    }
+                    if (!Win32.IsWindowVisible(defView))
+                        Logger.Log("[WorkerW] 警告：DefView 重绘后仍不可见（桌面图标可能被隐藏）");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"[WorkerW] 图标层重绘异常: {ex.Message}");
+                }
+            }
         }
 
         public static bool IsValid(IntPtr hWnd) => hWnd != IntPtr.Zero && Win32.IsWindow(hWnd);
@@ -434,15 +468,9 @@ namespace DynamicWallpaper.Desktop
             {
                 IntPtr defView = FindTopLevelDefView();
                 if (defView != IntPtr.Zero)
-                {
-                    Logger.Log("[WorkerW] 触发桌面刷新（DefView SW_HIDE→SW_SHOWNORMAL）");
-                    Win32.ShowWindow(defView, Win32.SW_HIDE);
-                    Win32.ShowWindow(defView, Win32.SW_SHOWNORMAL);
-                }
+                    SafeIconLayerRefresh(defView, "触发桌面刷新");
                 else
-                {
                     Logger.Log("[WorkerW] 未找到 SHELLDLL_DefView，跳过桌面刷新");
-                }
             }
             catch (Exception ex)
             {

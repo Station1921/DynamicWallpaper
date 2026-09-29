@@ -22,8 +22,15 @@ namespace DynamicWallpaper.Core
         /// <summary>尚无/未使用虚拟桌面时的稳定哨兵 GUID，使「按桌面记忆」在单桌面下也能一致地存取。</summary>
         private static readonly Guid DefaultDesktop = new Guid("FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF");
 
-        private const string RegKey = @"Software\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops";
         private const string RegValue = "CurrentVirtualDesktop";
+
+        /// <summary>当前桌面 GUID 的候选注册表位置（按顺序尝试）。
+        /// 主路径 Win10/Win11 通用；备用 SessionInfo 路径应对个别版本把状态存到会话子键的情况。</summary>
+        private static readonly string[] RegKeys =
+        {
+            @"Software\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops",
+            @"Software\Microsoft\Windows\CurrentVersion\Explorer\SessionInfo\1\VirtualDesktops",
+        };
 
         private readonly System.Timers.Timer _timer = new(300);
         private Guid _lastDesktop = DefaultDesktop;
@@ -45,6 +52,9 @@ namespace DynamicWallpaper.Core
         public void Start()
         {
             _lastDesktop = ReadCurrent() ?? DefaultDesktop;
+            Logger.Log(_lastDesktop == DefaultDesktop
+                ? "[VirtualDesktop] 未读到虚拟桌面记录（当前视为单桌面；创建/切换桌面后会自动开始检测）"
+                : $"[VirtualDesktop] 当前虚拟桌面 GUID = {_lastDesktop}");
             _timer.Elapsed += PollTick;
             _timer.AutoReset = true;
             _timer.Start();
@@ -65,17 +75,20 @@ namespace DynamicWallpaper.Core
         /// <summary>读取注册表中的当前虚拟桌面 GUID。无虚拟桌面 / 值缺失时返回 null。</summary>
         private static Guid? ReadCurrent()
         {
-            try
+            foreach (var path in RegKeys)
             {
-                using var key = Registry.CurrentUser.OpenSubKey(RegKey);
-                if (key == null) return null;
-                var val = key.GetValue(RegValue);
-                if (val is byte[] b && b.Length == 16) return new Guid(b);
-                if (val is string s && Guid.TryParse(s, out var g)) return g;
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"[VirtualDesktop] 读取当前虚拟桌面失败：{ex.Message}");
+                try
+                {
+                    using var key = Registry.CurrentUser.OpenSubKey(path);
+                    if (key == null) continue;
+                    var val = key.GetValue(RegValue);
+                    if (val is byte[] b && b.Length == 16) return new Guid(b);
+                    if (val is string s && Guid.TryParse(s, out var g)) return g;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"[VirtualDesktop] 读取当前虚拟桌面失败({path}): {ex.Message}");
+                }
             }
             return null;
         }

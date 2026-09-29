@@ -1113,7 +1113,7 @@ namespace DynamicWallpaper.Core
                 if (opToken.IsCancellationRequested) return; // 排队期间已被更新的操作打断
                 if (_states.TryGetValue(screenIndex, out var st))
                     await CleanupScreenAsync(st, restoreWallpaper: true);
-                PersistAssignments();
+                PersistAfterClear();
             }
             finally
             {
@@ -1138,7 +1138,7 @@ namespace DynamicWallpaper.Core
                 if (opToken.IsCancellationRequested) return; // 排队期间已被更新的操作打断
                 var tasks = _states.Values.Select(st => CleanupScreenAsync(st, restoreWallpaper)).ToArray();
                 await Task.WhenAll(tasks);
-                if (persistState) PersistAssignments();
+                if (persistState) PersistAfterClear();
             }
             finally
             {
@@ -1341,30 +1341,36 @@ namespace DynamicWallpaper.Core
         {
             try
             {
-                // 如果记录丢失或文件已不存在，再次从注册表读取当前静态壁纸
+                // 读取"当前桌面此刻的系统壁纸"（每块虚拟桌面各有自己的系统壁纸）。
+                // 关键：分桌面场景下绝不能用启动时记录的单一 _originalWallpaper 做重绘目标——
+                // 那会把别的桌面的壁纸强写到本桌面（"桌面2解除后变成桌面1壁纸"的根因）。
+                // 读当前值 = 只触发一次重绘、不改变壁纸语义，各桌面保持各自的系统壁纸。
+                string liveCurrent = "";
+                try
+                {
+                    liveCurrent = Registry.GetValue(@"HKEY_CURRENT_USER\Control Panel\Desktop", "Wallpaper", "") as string ?? "";
+                }
+                catch { liveCurrent = ""; }
+
+                // 记录值缺失时才回退到启动记录（首次运行/注册表读取失败）
                 if (string.IsNullOrEmpty(_originalWallpaper) || !File.Exists(_originalWallpaper))
                     ReadOriginalWallpaper();
 
-                if (!string.IsNullOrEmpty(_originalWallpaper) && File.Exists(_originalWallpaper))
+                string target = (!string.IsNullOrEmpty(liveCurrent) && File.Exists(liveCurrent))
+                    ? liveCurrent
+                    : _originalWallpaper;
+
+                if (!string.IsNullOrEmpty(target) && File.Exists(target))
                 {
-                    // 非强制时：系统壁纸层恒为启动前原壁纸（静态壁纸由窗口层承载），若当前已是原壁纸则
-                    // 无需重设，避免重复设置触发系统异步重绘/残留闪烁（切换壁纸时）。
-                    if (!forceRepaint)
+                    // 非强制时：当前已是该壁纸则无需重设，避免重复设置触发系统异步重绘/残留闪烁。
+                    if (!forceRepaint && string.Equals(liveCurrent, target, StringComparison.OrdinalIgnoreCase))
                     {
-                        try
-                        {
-                            string? current = Registry.GetValue(@"HKEY_CURRENT_USER\Control Panel\Desktop", "Wallpaper", "") as string;
-                            if (string.Equals(current, _originalWallpaper, StringComparison.OrdinalIgnoreCase))
-                            {
-                                Logger.Log("[WallpaperManager] 系统壁纸已是原壁纸，跳过恢复");
-                                return;
-                            }
-                        }
-                        catch { /* 注册表读取失败时继续走设置流程 */ }
+                        Logger.Log("[WallpaperManager] 系统壁纸已是当前壁纸，跳过恢复");
+                        return;
                     }
 
-                    Win32.SetDesktopWallpaper(_originalWallpaper);
-                    Logger.Log($"[WallpaperManager] 已恢复系统壁纸(force={forceRepaint}): {_originalWallpaper}");
+                    Win32.SetDesktopWallpaper(target);
+                    Logger.Log($"[WallpaperManager] 已重绘系统壁纸(force={forceRepaint}): {target}");
                 }
                 else
                 {
@@ -1389,13 +1395,27 @@ namespace DynamicWallpaper.Core
                 .Select(s => new ScreenAssignment { Index = s.Index, Path = s.LastPath, Type = s.LastType })
                 .ToList();
             _config.Assignments = list;
-            if (_config.PerDesktopEnabled && _vd != null && _currentDesktop != Guid.Empty)
-            {
-                var key = _currentDesktop.ToString();
-                if (list.Count > 0) _config.DesktopAssignments[key] = list;
-                else _config.DesktopAssignments.Remove(key);
-            }
+            if (_config.PerDesktopEnabled && _vd != null && _currentDesktop != Guid.Empty && list.Count > 0)
+                _config.DesktopAssignments[_currentDesktop.ToString()] = list;
             _config.Save();
+        }
+
+        /// <summary>清除操作（解除某屏/解除全部/退出前停止）后的持久化：
+        /// 先更新全局分配；若清完所有屏幕后已无任何分配，则**连带清空所有虚拟桌面的分配桶**——
+        /// 否则切回之前设过壁纸的桌面会"自己又冒出来"（用户反馈：桌面2解除后回桌面1还有壁纸，
+        /// 必须再解除一遍）。用户预期"解除"就是彻底解除。仅当所有屏都空时才清，单屏解除不影响其他桌面。</summary>
+        private void PersistAfterClear()
+        {
+            PersistAssignments();
+            if (_config.Assignments == null || _config.Assignments.Count == 0)
+            {
+                if (_config.DesktopAssignments.Count > 0)
+                {
+                    _config.DesktopAssignments.Clear();
+                    _config.Save();
+                    Logger.Log("[WallpaperManager] 已清空所有虚拟桌面的壁纸分配（彻底解除）");
+                }
+            }
         }
 
         /// <summary>虚拟桌面切换事件入口（在 VDM 轮询线程上触发）：整体调度到 UI 线程，
@@ -1415,6 +1435,11 @@ namespace DynamicWallpaper.Core
         {
             if (!_config.PerDesktopEnabled || _vd == null) return;
 
+            // 0. 切换前先失效承载层缓存：Win11 各虚拟桌面共享同一 Progman（缓存可复用），但 Win10 的
+            // 各虚拟桌面可能是各自独立的 Progman/WorkerW，复用旧句柄会把壁纸挂到已不在前台的桌面上
+            // （"Win10 分桌面不生效"的根因）。失效后由下一次 AcquireWorkerW 重新定位当前桌面的承载层。
+            try { WorkerWInjector.InvalidateCache(); } catch { }
+
             // 1. 离开上一桌面：把当前实时状态快照进它的分配桶（离开即记住）
             if (_currentDesktop != Guid.Empty)
             {
@@ -1427,7 +1452,7 @@ namespace DynamicWallpaper.Core
             }
             _currentDesktop = newId;
 
-            // 2. 加载新桌面的分配（无记录则保留当前屏幕内容）
+            // 2. 加载新桌面的分配
             var key = newId.ToString();
             var bucket = _config.DesktopAssignments.TryGetValue(key, out var b) ? b : null;
             var plan = (bucket ?? new System.Collections.Generic.List<ScreenAssignment>())
@@ -1435,9 +1460,20 @@ namespace DynamicWallpaper.Core
                 .Select(a => (a.Path, a.Type, a.Index))
                 .ToList();
             if (plan.Count > 0)
+            {
                 _ = ApplyRestorePlanAsync(plan); // save:false，不回写（新桌面分配已持久化）
+            }
             else
-                Logger.Log($"[WallpaperManager] 虚拟桌面 {newId} 无已保存壁纸，保持当前屏幕内容");
+            {
+                // 目标桌面没有已保存壁纸：撤走本程序的覆盖层，露出该桌面自己的系统壁纸。
+                // 若沿用旧的"保持当前屏幕内容"，会把上一个桌面的壁纸串到本桌面（用户反馈的串桌面根因）。
+                Logger.Log($"[WallpaperManager] 虚拟桌面 {newId} 无已保存壁纸，撤走覆盖层显示系统壁纸");
+                _ = Task.Run(async () =>
+                {
+                    try { await StopAsync(restoreWallpaper: true, persistState: false); }
+                    catch (Exception ex) { Logger.Log($"[WallpaperManager] 撤走覆盖层失败: {ex.Message}"); }
+                });
+            }
             _config.Save();
         }
 
