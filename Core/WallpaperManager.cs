@@ -1162,9 +1162,11 @@ namespace DynamicWallpaper.Core
             // WebView2 Controller.Close()（尤其 m3u8 在线流）会同步阻塞数百毫秒到数秒，
             // 若在此 await，解除壁纸/切换壁纸都会被拖住；先摘引用让界面立即响应，
             // 销毁动作在 UI 空闲时（ApplicationIdle）再执行，不抢占用户操作。
+            IntPtr ownHwnd = IntPtr.Zero;
             await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
             {
                 var provider = st.Provider;
+                ownHwnd = provider?.Handle ?? IntPtr.Zero;
                 st.Provider = null;
                 st.LastPath = "";
                 st.IsStaticImage = false;
@@ -1184,18 +1186,19 @@ namespace DynamicWallpaper.Core
                 await System.Windows.Application.Current.Dispatcher.InvokeAsync(() => reusableStatic.Dispose());
             }
 
+            // 记录承载层并复位状态后，在 UI 线程空闲时兜底摘除本屏残留子窗口（Provider.Dispose
+            // 通常已把窗口正常关掉，这里对已不存在的句柄是 no-op；仅清理销毁失败留下的孤儿窗口）。
+            // 多屏扩展下所有屏共享同一个缓存的 Progman 承载层，绝不能后台线程 DetachChildren
+            // 整个承载层——那会把其他屏幕仍在播放的壁纸窗口一起拆掉，WebView2 Dispose 随之挂死 UI。
+
             // 2. 在后台线程执行 Win32 清理与系统壁纸恢复（避免 SendMessageTimeout / SPI 阻塞 UI）
             await Task.Run(() =>
             {
-                // 仅把本程序注入的子窗口从 WorkerW 上摘离/销毁。
+                // 仅记录承载层并复位状态，不再批量拆子窗口；本屏子窗口由下方 UI 线程兜底摘除。
                 // 注意：【不要销毁系统 WorkerW 本身】——那样会迫使 Windows 重建桌面，
                 // 出现“黑屏闪一下再恢复”的现象。我们只是把自己的渲染窗口撤走，
                 // 原本压在注入层之下的系统静态壁纸会自然透出来，无需任何刷新。
-                if (st.WorkerW != IntPtr.Zero)
-                {
-                    WorkerWInjector.DetachChildren(st.WorkerW);
-                    st.WorkerW = IntPtr.Zero;
-                }
+                st.WorkerW = IntPtr.Zero;
 
                 // 解除任意壁纸后强制桌面重绘：WebProvider 等从未走 ForceDwmComposition 的层
                 // 在摘离后 DWM 合成状态可能停留，导致桌面黑屏（即便系统壁纸已是原壁纸、
@@ -1211,6 +1214,17 @@ namespace DynamicWallpaper.Core
                 if (restoreWallpaper && (wasStaticImage || _states.Values.All(s => s.Provider == null && !s.IsStaticImage)))
                     RestoreSystemWallpaper(forceRepaint: true);
             });
+
+            // 3. UI 线程空闲时兜底摘除本屏残留子窗口（Provider.Dispose 通常已把窗口正常关掉，
+            // 这里对已不存在的句柄是 no-op；仅清理跨线程销毁失败留下的孤儿窗口）。
+            if (ownHwnd != IntPtr.Zero)
+            {
+                await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    try { WorkerWInjector.DetachChildWindow(ownHwnd); }
+                    catch (Exception ex) { Logger.Log($"[WallpaperManager] 摘除子窗口异常: {ex.Message}"); }
+                }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            }
         }
 
         /// <summary>通过官方桌面壁纸 API（IDesktopWallpaper）将指定图片设为系统桌面壁纸。

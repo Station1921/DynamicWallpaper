@@ -207,6 +207,21 @@ namespace DynamicWallpaper.Desktop
             public int Height => Bottom - Top;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        public struct POINT
+        {
+            public int X;
+            public int Y;
+
+            public POINT(int x, int y) { X = x; Y = y; }
+        }
+
+        [DllImport("user32.dll")]
+        public static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
+
+        [DllImport("user32.dll")]
+        public static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
+
         public static string GetClassName(IntPtr hWnd)
         {
             var sb = new StringBuilder(256);

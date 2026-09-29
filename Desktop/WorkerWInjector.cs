@@ -304,8 +304,9 @@ namespace DynamicWallpaper.Desktop
                     // 无法可靠调整（壁纸 WorkerW 不存在或已是 Z 序最顶）：不置顶，把 child 沉到底部，
                     // 至少保证不盖住桌面图标，并打日志警告。
                     Logger.Log("[WorkerW] DefView 未出现且无法可靠定位壁纸层，child 置于 Z 序底部（HWND_BOTTOM），避免盖住桌面图标");
+                    ToParentClient(parentHwnd, bounds, out int cx, out int cy);
                     Win32.SetWindowPos(childHwnd, Win32.HWND_BOTTOM,
-                        bounds.X, bounds.Y, bounds.Width, bounds.Height,
+                        cx, cy, bounds.Width, bounds.Height,
                         Win32.SWP_NOACTIVATE | Win32.SWP_NOOWNERZORDER | Win32.SWP_SHOWWINDOW);
                     Win32.SetWindowPos(parentHwnd, IntPtr.Zero, 0, 0, 0, 0,
                         Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOZORDER | Win32.SWP_FRAMECHANGED | Win32.SWP_SHOWWINDOW);
@@ -314,14 +315,16 @@ namespace DynamicWallpaper.Desktop
                 }
             }
 
-            // 关键：x/y 必须是屏幕在“虚拟桌面”中的真实坐标（bounds.X/Y），绝不能写死 0,0。
-            // 多屏扩展模式下主屏为 (0,0)、第二屏通常为 (3440,0) 等偏移；若写死 0,0，
-            // 副屏壁纸窗口会被错误地压到主屏左上角（与/或盖住主屏壁纸），副屏永远空白——
-            // 这正是“扩展模式仅主屏有壁纸、第二屏无壁纸 / 复制仅主屏有”的根因。
-            // 子窗口 SetParent 到 Progman 后，坐标相对 Progman 客户区，而 Progman 原点即虚拟 (0,0)，
-            // 因此用 bounds.X/Y 即可把窗口精确放到对应显示器上。
+            // 关键：x/y 必须是屏幕在“虚拟桌面”中的真实坐标换算成父窗口客户区坐标，绝不能写死 0,0。
+            // 多屏扩展模式下主屏为 (0,0)、第二屏通常为 (3440,0) 或 (-1920,0) 等偏移；若写死 0,0，
+            // 副屏壁纸窗口会被错误地压到主屏左上角（与/或盖住主屏壁纸），副屏永远空白。
+            // 子窗口 SetParent 到 Progman 后，坐标相对 Progman 客户区。Progman 客户区覆盖整个虚拟桌面，
+            // 其客户区原点 = 虚拟桌面左上角（外接屏在主屏左侧/上方时该原点 ≠ (0,0)，如 (-1920,0)），
+            // 因此必须用“屏幕虚拟坐标 − 父客户区原点”换算，否则整块壁纸会偏移一块屏
+            // （表现为：主屏壁纸跑到副屏且按主屏分辨率外溢、设副屏壁纸则完全跑到屏幕外）。
+            ToParentClient(parentHwnd, bounds, out int px, out int py);
             Win32.SetWindowPos(childHwnd, insertAfter,
-                bounds.X, bounds.Y, bounds.Width, bounds.Height,
+                px, py, bounds.Width, bounds.Height,
                 Win32.SWP_NOACTIVATE | Win32.SWP_NOOWNERZORDER | Win32.SWP_SHOWWINDOW);
 
             // 注：此处不再执行 HWND_TOP 置顶——实验证明子窗口状态下 HWND_TOP 无法触发
@@ -365,14 +368,15 @@ namespace DynamicWallpaper.Desktop
 
             // 3. 归位回挂载父窗口
             Win32.SetParent(childHwnd, parentHwnd);
-            // 4. 定位 Z 序：有 DefView 则置于其下方（图标层之下、壁纸层之上），否则沉底
+            // 归位回挂载父窗口：坐标必须换算成父客户区坐标（与 Attach 一致），否则副屏壁纸会被
+            // 重置回错误位置而再次空白/串屏。
             IntPtr insertAfter = Win32.HWND_BOTTOM;
             IntPtr defView = FindShellDefViewUnderParent(parentHwnd);
             if (defView != IntPtr.Zero)
                 insertAfter = defView;
-            // 归位使用屏幕真实虚拟坐标 bounds.X/Y（与 Attach 一致），否则副屏壁纸会被重置回主屏 (0,0) 而再次空白。
+            ToParentClient(parentHwnd, bounds, out int px, out int py);
             Win32.SetWindowPos(childHwnd, insertAfter,
-                bounds.X, bounds.Y, bounds.Width, bounds.Height,
+                px, py, bounds.Width, bounds.Height,
                 Win32.SWP_NOACTIVATE | Win32.SWP_NOOWNERZORDER | Win32.SWP_SHOWWINDOW);
 
             // 4.1 归位后强制校验 Z 序：SetParent 回挂时 Windows 会把子窗口置到父窗口 Z 序顶部，
@@ -383,8 +387,12 @@ namespace DynamicWallpaper.Desktop
             {
                 fixAttempts++;
                 Logger.Log($"[WorkerW] Z 序校验失败（第{fixAttempts}次），重新将 child 置于 DefView 下方: 0x{defView.ToInt64():X}");
+                // SWP_NOMOVE | SWP_NOSIZE：只调整 Z 序，绝不改动位置/尺寸。
+                // 此前这里写死 (0,0,w,h)，多屏共享承载层时会把本屏窗口挪到父客户区原点
+                // （= 虚拟桌面左上角，通常是左侧副屏），造成两块屏的壁纸叠在同一块屏上。
                 Win32.SetWindowPos(childHwnd, defView,
-                    0, 0, bounds.Width, bounds.Height,
+                    0, 0, 0, 0,
+                    Win32.SWP_NOMOVE | Win32.SWP_NOSIZE |
                     Win32.SWP_NOACTIVATE | Win32.SWP_NOOWNERZORDER | Win32.SWP_SHOWWINDOW);
                 Thread.Sleep(50);
             }
@@ -465,6 +473,35 @@ namespace DynamicWallpaper.Desktop
                 }
                 catch { /* ignore */ }
             }
+        }
+
+        /// <summary>仅摘除并销毁本屏自己的子窗口。多屏扩展下所有屏共享同一个缓存的 Progman
+        /// 承载层，解除某一屏时绝不能 DetachChildren 整个承载层——否则会把其他屏幕仍在
+        /// 播放的壁纸窗口一起跨线程拆掉，WebView2 随后 Dispose 会挂死 UI。</summary>
+        public static void DetachChildWindow(IntPtr child)
+        {
+            if (child == IntPtr.Zero || !Win32.IsWindow(child)) return;
+            Win32.GetWindowThreadProcessId(child, out uint pid);
+            if ((int)pid != Process.GetCurrentProcess().Id) return;
+            try
+            {
+                Win32.SetParent(child, IntPtr.Zero);
+                Win32.DestroyWindow(child);
+            }
+            catch { /* ignore */ }
+        }
+
+        /// <summary>把屏幕虚拟桌面坐标换算成父窗口客户区坐标。
+        /// 子窗口 SetParent 后，SetWindowPos 的 x/y 相对父窗口客户区原点；Progman 覆盖整个
+        /// 虚拟桌面，其客户区原点 = 虚拟桌面左上角。外接屏位于主屏左侧/上方时该原点为负
+        /// （如 (-1920,0)），直接用虚拟坐标会整体偏移一块屏。</summary>
+        private static void ToParentClient(IntPtr parent, System.Drawing.Rectangle bounds, out int x, out int y)
+        {
+            var pt = new Win32.POINT(0, 0);
+            if (!Win32.ClientToScreen(parent, ref pt))
+            { pt.X = 0; pt.Y = 0; }
+            x = bounds.X - pt.X;
+            y = bounds.Y - pt.Y;
         }
 
         /// <summary>安全销毁一个孤儿 WorkerW 窗口（仅用于程序自己生成/占用的 WorkerW）。</summary>

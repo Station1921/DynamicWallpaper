@@ -919,18 +919,19 @@ namespace DynamicWallpaper
 
             var menu = new ContextMenu { PlacementTarget = border, Placement = PlacementMode.MousePoint };
             var setMenu = new MenuItem { Header = "设为壁纸到" };
-            foreach (var sc in ScreenManager.GetScreens())
+            var screens = ScreenManager.GetScreens();
+            foreach (var sc in screens)
             {
                 int idx = sc.Index;
-                var mi = new MenuItem { Header = sc.DisplayName };
-                mi.Click += async (_, _) => await SetFolderWallpaperAsync(fi, idx);
-                setMenu.Items.Add(mi);
+                bool assigned = IsFolderAssignedToScreen(fi.Folder, idx);
+                setMenu.Items.Add(BuildScreenTargetMenuItem(idx, sc.DisplayName, assigned,
+                    async i => await SetFolderWallpaperAsync(fi, i)));
             }
-            if (ScreenManager.GetScreens().Count > 1)
+            if (screens.Count > 1)
             {
-                var miAll = new MenuItem { Header = "所有屏幕" };
-                miAll.Click += async (_, _) => await SetFolderWallpaperAsync(fi, -1);
-                setMenu.Items.Add(miAll);
+                bool allAssigned = screens.All(sc => IsFolderAssignedToScreen(fi.Folder, sc.Index));
+                setMenu.Items.Add(BuildScreenTargetMenuItem(-1, "所有屏幕", allAssigned,
+                    async i => await SetFolderWallpaperAsync(fi, i)));
             }
             var openFolder = new MenuItem { Header = "打开文件夹" };
             openFolder.Click += (_, _) =>
@@ -1003,18 +1004,19 @@ namespace DynamicWallpaper
 
             var menu = new ContextMenu { PlacementTarget = border, Placement = PlacementMode.MousePoint };
             var setMenu = new MenuItem { Header = "设为壁纸到" };
-            foreach (var sc in ScreenManager.GetScreens())
+            var screens = ScreenManager.GetScreens();
+            foreach (var sc in screens)
             {
                 int idx = sc.Index;
-                var mi = new MenuItem { Header = sc.DisplayName };
-                mi.Click += async (_, _) => await ApplyItemAsync(item, idx);
-                setMenu.Items.Add(mi);
+                bool assigned = string.Equals(_manager.GetActivePath(idx), item.Path, StringComparison.OrdinalIgnoreCase);
+                setMenu.Items.Add(BuildScreenTargetMenuItem(idx, sc.DisplayName, assigned,
+                    async i => await ApplyItemAsync(item, i)));
             }
-            if (ScreenManager.GetScreens().Count > 1)
+            if (screens.Count > 1)
             {
-                var miAll = new MenuItem { Header = "所有屏幕" };
-                miAll.Click += async (_, _) => await ApplyItemAsync(item, -1);
-                setMenu.Items.Add(miAll);
+                bool allAssigned = screens.All(sc => string.Equals(_manager.GetActivePath(sc.Index), item.Path, StringComparison.OrdinalIgnoreCase));
+                setMenu.Items.Add(BuildScreenTargetMenuItem(-1, "所有屏幕", allAssigned,
+                    async i => await ApplyItemAsync(item, i)));
             }
             var remove = new MenuItem { Header = "从库移除" };
             remove.Click += (_, _) => RemoveItem(item);
@@ -1318,6 +1320,36 @@ namespace DynamicWallpaper
         }
 
         /// <summary>构造“旋转”二级菜单（不旋转/顺时针/逆时针），按壁纸路径独立记录旋转角度，单次 90° 可叠加，>=360 归零。</summary>
+        /// <summary>构建「设为壁纸到 → 屏幕」菜单项：文字前带状态圆点——
+        /// 绿点=该屏已设置当前壁纸，灰点=未设置。多屏下点选前能直观看到各屏状态。</summary>
+        private MenuItem BuildScreenTargetMenuItem(int screenIndex, string displayName, bool assigned, Func<int, Task> apply)
+        {
+            var dot = new System.Windows.Shapes.Ellipse
+            {
+                Width = 7,
+                Height = 7,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 7, 0),
+                Fill = assigned
+                    ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x22, 0xC5, 0x5E))
+                    : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x71, 0x77, 0x82))
+            };
+            var panel = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+            panel.Children.Add(dot);
+            panel.Children.Add(new TextBlock { Text = displayName, VerticalAlignment = VerticalAlignment.Center });
+            var mi = new MenuItem { Header = panel };
+            mi.Click += async (_, _) => await apply(screenIndex);
+            return mi;
+        }
+
+        /// <summary>判断某屏幕当前播放的壁纸是否属于指定文件夹（幻灯片文件夹卡片的状态点判定）。</summary>
+        private bool IsFolderAssignedToScreen(string folder, int screenIndex)
+        {
+            var p = _manager.GetActivePath(screenIndex);
+            if (string.IsNullOrEmpty(p) || IsWebUrl(p)) return false;
+            return string.Equals(Path.GetDirectoryName(p), folder, StringComparison.OrdinalIgnoreCase);
+        }
+
         private MenuItem BuildRotationSubMenu(string path)
         {
             int rot = _manager.GetRotation(path);
