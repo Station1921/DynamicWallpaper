@@ -278,8 +278,31 @@ namespace DynamicWallpaper.Core
                         .ToList();
                 }
                 if (plan.Count > 0)
-                    _ = ApplyRestorePlanAsync(plan);
-                _config.Save();
+                {
+                    // 开机自启等桌面就绪（锁屏消失、DefView 可见）再恢复，避免锁屏/桌面未就绪时
+                    // 过早挂壁纸把图标层藏起来、点击穿透失效。等待在后台线程进行，真正的恢复
+                    // 仍回到 UI 线程执行（各 Provider 在 UI 线程创建）。
+                    _ = Task.Run(async () =>
+                    {
+                        await WaitForDesktopReadyAsync();
+                        var disp = System.Windows.Application.Current?.Dispatcher;
+                        if (disp != null)
+                            await disp.InvokeAsync(async () =>
+                            {
+                                await ApplyRestorePlanAsync(plan);
+                                _config.Save();
+                            });
+                        else
+                        {
+                            await ApplyRestorePlanAsync(plan);
+                            _config.Save();
+                        }
+                    });
+                }
+                else
+                {
+                    _config.Save();
+                }
             }
 
             // 启动壁纸轮播（按配置决定是否开启）
@@ -302,6 +325,48 @@ namespace DynamicWallpaper.Core
             {
                 Logger.Log($"[WallpaperManager] 读取原系统壁纸失败: {ex.Message}");
             }
+        }
+
+        /// <summary>判断当前前台是否为 Windows 锁屏/登录界面（LockApp / LogonUI）。
+        /// 开机自启时锁屏可能仍在前台，桌面外壳未就绪，过早挂壁纸会把图标层藏起来、点击穿透失效。
+        /// 用于延迟启动恢复，等用户进入桌面后再应用。</summary>
+        private static bool IsLockScreenActive()
+        {
+            try
+            {
+                IntPtr fg = Win32.GetForegroundWindow();
+                if (fg == IntPtr.Zero) return false;
+                Win32.GetWindowThreadProcessId(fg, out uint pid);
+                if (pid == 0) return false;
+                using var p = Process.GetProcessById((int)pid);
+                var n = p.ProcessName.ToLowerInvariant();
+                return n == "lockapp" || n == "logonui";
+            }
+            catch { return false; }
+        }
+
+        /// <summary>等待桌面真正可交互后再恢复壁纸：锁屏已消失且图标层(DefView)可见。
+        /// 避免开机自启在锁屏/桌面未就绪时过早挂壁纸（图标被隐藏、右击失效的根因之一）。
+        /// 最多等待约 15 秒，超时则不再等待、照常恢复（宁可晚显示也不卡死在错误的 Z 序上）。</summary>
+        private async Task WaitForDesktopReadyAsync()
+        {
+            for (int i = 0; i < 30; i++)
+            {
+                bool shellReady = false;
+                try
+                {
+                    IntPtr defView = WorkerWInjector.FindTopLevelDefView();
+                    shellReady = defView != IntPtr.Zero && Win32.IsWindowVisible(defView);
+                }
+                catch { }
+                if (!IsLockScreenActive() && shellReady)
+                {
+                    Logger.Log("[WallpaperManager] 桌面已就绪，开始恢复壁纸");
+                    return;
+                }
+                await Task.Delay(500);
+            }
+            Logger.Log("[WallpaperManager] 等待桌面就绪超时，照常恢复壁纸");
         }
 
         /// <summary>把配置中的壁纸适应方式同步到各 Provider 静态属性，并立即刷新当前已激活的壁纸。
@@ -1505,6 +1570,13 @@ namespace DynamicWallpaper.Core
             if (disp != null && !disp.CheckAccess())
             {
                 disp.BeginInvoke(() => WatchdogTick(sender, e));
+                return;
+            }
+
+            // 锁屏/登录界面期间不重建或重挂壁纸（外壳尚未就绪，过早操作会藏起图标层、点击穿透失效）
+            if (IsLockScreenActive())
+            {
+                Logger.Log("[Watchdog] 锁屏期间跳过拓扑检查");
                 return;
             }
 

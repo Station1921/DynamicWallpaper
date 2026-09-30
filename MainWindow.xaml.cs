@@ -222,7 +222,7 @@ namespace DynamicWallpaper
             if (screens.Count > 1)
                 _screenOptions.Add(new ScreenOption { Index = -1, Name = "所有屏幕" });
             foreach (var s in screens)
-                _screenOptions.Add(new ScreenOption { Index = s.Index, Name = s.DisplayName });
+                _screenOptions.Add(new ScreenOption { Index = s.Index, Name = ScreenMenuLabel(s) });
 
             bool multiScreen = screens.Count > 1;
             if (multiScreen)
@@ -237,7 +237,7 @@ namespace DynamicWallpaper
             else
             {
                 ScreenCombo.Visibility = Visibility.Collapsed;
-                ScreenText.Text = screens.Count > 0 ? screens[0].DisplayName : "主屏";
+                ScreenText.Text = screens.Count > 0 ? ScreenMenuLabel(screens[0]) : "主屏";
                 ScreenText.Visibility = Visibility.Visible;
             }
         }
@@ -249,6 +249,10 @@ namespace DynamicWallpaper
             var s = ScreenManager.GetScreens().FirstOrDefault(x => x.Index == index);
             return s?.DisplayName ?? ("屏幕 " + index);
         }
+
+        /// <summary>屏幕菜单/状态栏用的友好标签：显示名 + 物理分辨率，让用户一眼对应到真实屏幕，
+        /// 避免软件编号（主屏优先）与 Windows 显示设置里的“显示器 1/2”标识不一致导致选错屏。</summary>
+        private static string ScreenMenuLabel(ScreenInfo sc) => $"{sc.DisplayName} ({sc.Resolution})";
 
         // ---------- 库管理 ----------
         /// <summary>本次会话已弹出过 HEVC 转码询问的原文件路径，避免重复弹窗。</summary>
@@ -924,7 +928,7 @@ namespace DynamicWallpaper
             {
                 int idx = sc.Index;
                 bool assigned = IsFolderAssignedToScreen(fi.Folder, idx);
-                setMenu.Items.Add(BuildScreenTargetMenuItem(idx, sc.DisplayName, assigned,
+                setMenu.Items.Add(BuildScreenTargetMenuItem(idx, ScreenMenuLabel(sc), assigned,
                     async i => await SetFolderWallpaperAsync(fi, i)));
             }
             if (screens.Count > 1)
@@ -1009,7 +1013,7 @@ namespace DynamicWallpaper
             {
                 int idx = sc.Index;
                 bool assigned = string.Equals(_manager.GetActivePath(idx), item.Path, StringComparison.OrdinalIgnoreCase);
-                setMenu.Items.Add(BuildScreenTargetMenuItem(idx, sc.DisplayName, assigned,
+                setMenu.Items.Add(BuildScreenTargetMenuItem(idx, ScreenMenuLabel(sc), assigned,
                     async i => await ApplyItemAsync(item, i)));
             }
             if (screens.Count > 1)

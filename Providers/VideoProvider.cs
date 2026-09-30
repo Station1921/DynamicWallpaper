@@ -33,6 +33,8 @@ namespace DynamicWallpaper.Providers
         private const int WS_EX_LAYERED = 0x00080000;
         private const int WS_EX_NOACTIVATE = 0x08000000;
         private const int WS_EX_TOOLWINDOW = 0x00000080;
+        // 点击穿透：壁纸窗口覆盖全屏但不阻挡桌面右键/双击（仅影响命中测试，视觉仍不透明）
+        private const int WS_EX_TRANSPARENT = 0x00000020;
 
         private const int ERROR_CLASS_ALREADY_EXISTS = 1410;
 
@@ -281,7 +283,7 @@ namespace DynamicWallpaper.Providers
             // WS_EX_LAYERED 必须在创建时携带：创建后再动态 SetWindowLong 设置无效
             // （WPF HwndSource 创建时设置也会被 WPF 内部丢弃，实测 exstyle 缺 0x80000 位）。
             _hwnd = CreateWindowEx(
-                WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
                 "DynamicWallpaperVideoHost", "DynamicWallpaper Video Host",
                 0, bounds.X, bounds.Y, bounds.Width, bounds.Height,
                 IntPtr.Zero, IntPtr.Zero, HInstance, IntPtr.Zero);

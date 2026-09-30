@@ -44,6 +44,11 @@ namespace DynamicWallpaper.Desktop
         public const int WS_EX_TOOLWINDOW = 0x00000080;
         public const int WS_EX_APPWINDOW = 0x00040000;
         public const int WS_EX_LAYERED = 0x00080000;
+        // 鼠标点击穿透：带此样式的分层窗口对命中测试“透明”，点击会穿透到其下方的窗口
+        // （桌面 DefView），因此壁纸窗口覆盖全屏也不阻挡桌面右键菜单/双击。仅影响命中测试，
+        // 不影响视觉渲染（配合 WS_EX_LAYERED + alpha=255 仍完全不透明显示）。壁纸应用必加，
+        // 彻底解决“壁纸在最上层、桌面无法右击”的问题。
+        public const int WS_EX_TRANSPARENT = 0x00000020;
         // Win11 24H2/25H2 raised desktop 模式标志：Progman 带此扩展样式时，桌面渲染走
         // "raised desktop" 架构（DWM 直接合成 Progman 的 WS_EX_LAYERED 子窗口），
         // 传统 WorkerW 注入失效。用于判断是否需要走 raised desktop 兼容分支。
@@ -111,6 +116,9 @@ namespace DynamicWallpaper.Desktop
         public static extern IntPtr GetForegroundWindow();
 
         [DllImport("user32.dll", SetLastError = true)]
+        public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        [DllImport("user32.dll", SetLastError = true)]
         public static extern IntPtr GetWindow(IntPtr hWnd, int uCmd);
 
         [DllImport("user32.dll", SetLastError = true)]
@@ -145,9 +153,6 @@ namespace DynamicWallpaper.Desktop
 
         [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
         public static extern bool SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni);
-
-        [DllImport("user32.dll", SetLastError = true)]
-        public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
         // ===== IDesktopWallpaper（Windows 8+ 官方桌面壁纸 API）=====
         // 替代 SPI_SETDESKWALLPAPER：调用立即返回（异步生效），实测不再阻塞 2~3 秒。

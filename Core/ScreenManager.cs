@@ -13,6 +13,9 @@ namespace DynamicWallpaper.Core
         public string DeviceName { get; set; } = "";
         public bool IsPrimary { get; set; }
         public string DisplayName { get; set; } = "";
+        /// <summary>物理分辨率标签（如 2560×1600），用于菜单/状态栏让用户一眼对应到真实屏幕，
+        /// 避免软件编号（主屏优先）与 Windows 显示设置里的“显示器 1/2”标识不一致导致的选错屏。</summary>
+        public string Resolution => $"{Bounds.Width}×{Bounds.Height}";
     }
 
     /// <summary>
