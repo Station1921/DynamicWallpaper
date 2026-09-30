@@ -35,8 +35,6 @@ namespace DynamicWallpaper.Providers
         private const int WS_EX_LAYERED = 0x00080000;
         private const int WS_EX_NOACTIVATE = 0x08000000;
         private const int WS_EX_TOOLWINDOW = 0x00000080;
-        // 点击穿透：壁纸窗口覆盖全屏但不阻挡桌面右键/双击（仅影响命中测试，视觉仍不透明）
-        private const int WS_EX_TRANSPARENT = 0x00000020;
 
         private const int ERROR_CLASS_ALREADY_EXISTS = 1410;
 
@@ -201,12 +199,16 @@ $@"<html><head><meta charset=""utf-8""><style>html,body{{margin:0;padding:0;over
             _isRemote = IsRemote(path);
             _isM3u8 = IsM3u8(path);
 
-            // 原生 WS_EX_LAYERED 窗口（必须在创建时携带，动态设置无效）：WPF 窗口挂到
-            // Win11 raised desktop 后 redirection surface 不被 DWM 合成，桌面永远无画面；
-            // 原生层窗口 + CoreWebView2Controller 与 VideoProvider 相同的结构才能被 DWM 真实合成。
+            // 原生【普通（非分层）子窗口】：仅 WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW，不带 WS_EX_LAYERED。
+            // 根因修复：带 WS_EX_LAYERED 时分层窗口被 DWM 独立合成到图标层(DefView)之上，
+            // 会盖住桌面图标、吃掉右键（即此前“运行中重设壁纸就盖图标”的根因）。普通子窗口挂到
+            // Progman 之下的“背景 WorkerW”（位于 DefView 之下），由 DWM 常规合成、自然沉在图标层之后。
+            // 仅当 WorkerWInjector.Attach 退化到直接挂 Progman（noreirectionbitmap）时，才会在挂载时
+            // 临时补上 WS_EX_LAYERED（罕见退化路径）。等同于 VideoProvider 的结构。
             EnsureWindowClass();
+            // 刻意不使用 WS_EX_TRANSPARENT：它会使分层窗口画在图标层(DefView)之上、盖住图标。
             _hwnd = CreateWindowEx(
-                WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
+                WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
                 "DynamicWallpaperWebHost", "DynamicWallpaper Web Host",
                 0, bounds.X, bounds.Y, bounds.Width, bounds.Height,
                 IntPtr.Zero, IntPtr.Zero, HInstance, IntPtr.Zero);
@@ -216,8 +218,6 @@ $@"<html><head><meta charset=""utf-8""><style>html,body{{margin:0;padding:0;over
                 return;
             }
 
-            // Layered 窗口默认 alpha=0（完全透明），必须置满不透明 DWM 才合成内容
-            Win32.SetLayeredWindowAttributes(_hwnd, 0, 255, Win32.LWA_ALPHA);
             // 记录创建线程的 Dispatcher：WebView2 COM 对象线程亲和，后续调用需调度回该线程。
             _uiDispatcher = System.Windows.Application.Current?.Dispatcher;
 
@@ -410,10 +410,9 @@ $@"<html><head><meta charset=""utf-8""><style>html,body{{margin:0;padding:0;over
         {
             if (_hwnd == IntPtr.Zero) return;
             WorkerWInjector.Attach(_hwnd, workerw, bounds);
-            // 挂接成功后再显示窗口，避免 WorkerW 获取失败时窗口在顶层闪现
-            Win32.SetWindowPos(_hwnd, IntPtr.Zero, 0, 0, 0, 0,
-                Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOZORDER
-                | Win32.SWP_NOACTIVATE | Win32.SWP_SHOWWINDOW);
+            // 【不再在此立即显示】Attach 已把窗口挂到壁纸层、并临时移到父客户区之外保持不可见。
+            // 等 WallpaperManager 确认内容就绪后，再调 WorkerWInjector.ShowWallpaperWindow 移入正确位置。
+            // 若在此就显示，切换时会闪出新窗口的空白帧（用户反馈的“切换闪一下”）。
         }
 
         public void Play() { }

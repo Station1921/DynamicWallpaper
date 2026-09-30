@@ -25,11 +25,11 @@ namespace DynamicWallpaper.Core
         private const string RegValue = "CurrentVirtualDesktop";
 
         /// <summary>当前桌面 GUID 的候选注册表位置（按顺序尝试）。
-        /// 主路径 Win10/Win11 通用；备用 SessionInfo 路径应对个别版本把状态存到会话子键的情况。</summary>
+        /// 主路径 Win10/Win11 通用；SessionInfo 下可能存在多个会话子键（不总是 \1），
+        /// 由 ReadCurrent 动态枚举，避免个别 Win10 版本把状态存到非 \1 的会话子键导致读不到 GUID。</summary>
         private static readonly string[] RegKeys =
         {
             @"Software\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops",
-            @"Software\Microsoft\Windows\CurrentVersion\Explorer\SessionInfo\1\VirtualDesktops",
         };
 
         private readonly System.Timers.Timer _timer = new(300);
@@ -75,6 +75,7 @@ namespace DynamicWallpaper.Core
         /// <summary>读取注册表中的当前虚拟桌面 GUID。无虚拟桌面 / 值缺失时返回 null。</summary>
         private static Guid? ReadCurrent()
         {
+            // 1) 主路径 CurrentVirtualDesktop（Win10/Win11 通用）
             foreach (var path in RegKeys)
             {
                 try
@@ -90,6 +91,30 @@ namespace DynamicWallpaper.Core
                     Logger.Log($"[VirtualDesktop] 读取当前虚拟桌面失败({path}): {ex.Message}");
                 }
             }
+            // 2) SessionInfo 下存在多个会话子键（不总是 \1），逐个尝试其 VirtualDesktops\CurrentVirtualDesktop
+            try
+            {
+                using var siRoot = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\SessionInfo");
+                if (siRoot != null)
+                {
+                    foreach (var sub in siRoot.GetSubKeyNames())
+                    {
+                        try
+                        {
+                            using var key = siRoot.OpenSubKey(sub + @"\VirtualDesktops");
+                            if (key == null) continue;
+                            var val = key.GetValue(RegValue);
+                            if (val is byte[] b && b.Length == 16) return new Guid(b);
+                            if (val is string s && Guid.TryParse(s, out var g)) return g;
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Log($"[VirtualDesktop] 读取会话子键虚拟桌面失败({sub}): {ex.Message}");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) { Logger.Log($"[VirtualDesktop] 枚举 SessionInfo 失败: {ex.Message}"); }
             return null;
         }
 

@@ -94,6 +94,34 @@ namespace DynamicWallpaper.Core
         {
             try
             {
+                // 进程内状态缓存：RunOnStartup 未翻转时跳过注册表操作。此前每次 Save()（设壁纸/
+                // 解除/重排库等都会触发）都开注册表键+打一条"已是最新"日志，纯属浪费与刷屏；
+                // 注册表语义不变：开启→写入（含 --silent），关闭→删除（不残留垃圾项）。
+                // 首次调用必执行（进程启动后兜底同步一次真实注册表状态，含旧键迁移）。
+                sbyte state = RunOnStartup ? (sbyte)1 : (sbyte)0;
+                if (_lastAppliedStartup == state) return;
+                _lastAppliedStartup = state;
+
+                // 迁移旧固定键：若 "DynamicWallpaper" 指向本 exe，挪到按目录区分的新键并删除旧键，
+                // 避免与另一份副本（稳定版/测试版）共用固定键互相顶替。指向其他 exe 时不动（由对方副本自行迁移）。
+                try
+                {
+                    using var legacyKey = Registry.CurrentUser.OpenSubKey(RunKey, true);
+                    if (legacyKey != null)
+                    {
+                        var curExe = Environment.ProcessPath;
+                        if (string.IsNullOrWhiteSpace(curExe)) curExe = Process.GetCurrentProcess().MainModule?.FileName;
+                        var legacyVal = legacyKey.GetValue(LegacyAppName) as string;
+                        if (curExe != null && legacyVal != null && legacyVal.StartsWith($"\"{curExe}\"", StringComparison.OrdinalIgnoreCase))
+                        {
+                            legacyKey.SetValue(AppName, legacyVal, RegistryValueKind.String);
+                            legacyKey.DeleteValue(LegacyAppName, false);
+                            Logger.Log($"[Config] 迁移旧自启项到按目录区分的键：{AppName}");
+                        }
+                    }
+                }
+                catch (Exception ex) { Logger.Log($"[Config] 旧自启项迁移失败（忽略）: {ex.Message}"); }
+
                 using var key = Registry.CurrentUser.OpenSubKey(RunKey, true);
                 if (key == null)
                 {
@@ -168,7 +196,24 @@ namespace DynamicWallpaper.Core
         }
 
         private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
-        private const string AppName = "DynamicWallpaper";
+        private const string LegacyAppName = "DynamicWallpaper";
+        /// <summary>ApplyStartup 进程内状态缓存：1=已按"开启"应用，0=已按"关闭"应用，null=尚未应用（首次必执行）。</summary>
+        private static sbyte? _lastAppliedStartup;
+        /// <summary>自启注册表项名：按 exe 所在目录做稳定哈希，使稳定版与测试版各占独立键互不顶替
+        /// （原固定名 "DynamicWallpaper" 会让两份副本互相覆盖/删除对方的开机自启项）。</summary>
+        private static string AppName
+        {
+            get
+            {
+                var exe = Environment.ProcessPath;
+                if (string.IsNullOrWhiteSpace(exe)) exe = Process.GetCurrentProcess().MainModule?.FileName;
+                if (string.IsNullOrWhiteSpace(exe)) return LegacyAppName;
+                using var sha = System.Security.Cryptography.SHA256.Create();
+                var dir = Path.GetDirectoryName(exe) ?? exe;
+                var hash = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(dir));
+                return "DynamicWallpaper_" + BitConverter.ToString(hash, 0, 4).Replace("-", "").ToLowerInvariant();
+            }
+        }
     }
 
     /// <summary>单屏壁纸分配记录（可序列化）。</summary>

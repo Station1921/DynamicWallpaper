@@ -68,7 +68,10 @@ namespace DynamicWallpaper.Providers
         public void AttachTo(IntPtr workerw, Rectangle bounds)
         {
             WorkerWInjector.Attach(Handle, workerw, bounds);
-            _window?.Show(); // 成功挂接到桌面壁纸层后再显示
+            // Attach 会把“未就绪”的窗口临时移到屏外；图片在 Show 时即已同步加载就绪，
+            // 因此这里直接把窗口移入正确位置并显示（顺序：先 WPF Show，再由本方法定位，保证位置由我们决定）。
+            _window?.Show();
+            WorkerWInjector.ShowWallpaperWindow(Handle, workerw, bounds);
         }
 
         /// <summary>运行时切换适应方式：立即更新已渲染图片的 Stretch（须在 UI 线程调用）。</summary>

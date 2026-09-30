@@ -85,6 +85,42 @@ namespace DynamicWallpaper
         public MainWindow()
         {
             Logger.Log("[MainWindow] 构造开始");
+            // r17：启动即把"正在运行的是哪一份 exe"写进日志（全路径 + 文件时间 + 大小 + PID）。
+            // 排查"改了没效果 / 症状回到原点"时，第一眼就能确认运行的副本是不是最新构建，
+            // 不必再来回猜测与试错。
+            try
+            {
+                var selfExe = Environment.ProcessPath;
+                if (!string.IsNullOrEmpty(selfExe))
+                {
+                    var fi = new System.IO.FileInfo(selfExe);
+                    Logger.Log($"[App] 运行副本: {selfExe}（exe 时间 {fi.LastWriteTime:yyyy-MM-dd HH:mm:ss}，{fi.Length:N0} 字节，PID {Environment.ProcessId}）");
+                }
+            }
+            catch { }
+            // r17：把"是否有另一份副本在同时运行"记进日志。两份副本会各自往承载层里注入自己的
+            // 壁纸窗口并互相抢 Z 序——现象就是"桌面图标被覆盖、右键落到壁纸窗口上"，而这类破坏
+            // 来自另一个进程的窗口，本程序无法自愈。记下路径即可一眼定性，不用再猜。
+            try
+            {
+                var mine = Environment.ProcessId;
+                var sb = new System.Text.StringBuilder();
+                foreach (var pr in Process.GetProcessesByName("DynamicWallpaper"))
+                {
+                    try
+                    {
+                        if (pr.Id == mine) continue;
+                        string p = "";
+                        try { p = pr.MainModule?.FileName ?? ""; } catch { p = "(无法读取路径)"; }
+                        sb.Append($"[PID {pr.Id}] {p} ");
+                    }
+                    catch { }
+                    finally { pr.Dispose(); }
+                }
+                if (sb.Length > 0)
+                    Logger.Log($"[App] 警告：检测到另一份 DynamicWallpaper 副本正在运行（多副本会互抢桌面承载层/覆盖图标/吃右键）: {sb.ToString().Trim()}");
+            }
+            catch { }
             InitializeComponent();
             Logger.Log("[MainWindow] InitializeComponent 完成");
 

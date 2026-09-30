@@ -261,22 +261,9 @@ namespace DynamicWallpaper.Core
                                   && _currentDesktop != Guid.Empty
                                   && _config.DesktopAssignments.TryGetValue(_currentDesktop.ToString(), out bucket)
                                   && (bucket?.Count ?? 0) > 0;
-                List<(string Path, WallpaperType Type, int Index)> plan;
-                if (useDesktop)
-                {
-                    plan = bucket!
-                        .Where(a => _states.ContainsKey(a.Index) && (IsRemoteUrl(a.Path) || File.Exists(a.Path)))
-                        .Select(a => (a.Path, a.Type, a.Index))
-                        .ToList();
-                    Logger.Log($"[WallpaperManager] 按虚拟桌面恢复（桌面 {_currentDesktop}），{plan.Count} 屏");
-                }
-                else
-                {
-                    plan = _config.Assignments
-                        .Where(a => _states.ContainsKey(a.Index) && (IsRemoteUrl(a.Path) || File.Exists(a.Path)))
-                        .Select(a => (a.Path, a.Type, a.Index))
-                        .ToList();
-                }
+                List<ScreenAssignment> source = useDesktop ? bucket! : _config.Assignments;
+                var plan = BuildRestorePlan(source);
+                Logger.Log($"[WallpaperManager] {(useDesktop ? $"按虚拟桌面恢复（桌面 {_currentDesktop}）" : "全局恢复")}，{plan.Count} 屏");
                 if (plan.Count > 0)
                 {
                     // 开机自启等桌面就绪（锁屏消失、DefView 可见）再恢复，避免锁屏/桌面未就绪时
@@ -325,6 +312,37 @@ namespace DynamicWallpaper.Core
             {
                 Logger.Log($"[WallpaperManager] 读取原系统壁纸失败: {ex.Message}");
             }
+        }
+
+        /// <summary>把已保存的每屏分配构建为开机恢复计划，处理拓扑变化导致的屏幕索引错位：
+        /// 若某分配保存的屏幕索引超出当前屏幕范围（例：“仅在2显示”时屏2变成 index 0，而保存的是
+        /// 双屏时的 index 1），则把该分配重映射到当前最小未使用的可用屏，避免“重启后壁纸完全不显示”。
+        /// 单屏场景下越界分配只会映射到 index 0，结果正确。已映射到某屏的索引不再被复用，避免重复。</summary>
+        private List<(string Path, WallpaperType Type, int Index)> BuildRestorePlan(List<ScreenAssignment> src)
+        {
+            var used = new HashSet<int>();
+            var result = new List<(string Path, WallpaperType Type, int Index)>();
+            if (src == null) return result;
+            int maxIndex = ScreenManager.Count - 1;
+            foreach (var a in src)
+            {
+                if (!IsRemoteUrl(a.Path) && !File.Exists(a.Path)) continue;
+                int idx = a.Index;
+                if (!_states.ContainsKey(idx))
+                {
+                    // 越界：取当前最小未使用的可用屏索引（拓扑变化后屏号重排）
+                    idx = -1;
+                    for (int i = 0; i <= maxIndex; i++)
+                    {
+                        if (_states.ContainsKey(i) && !used.Contains(i)) { idx = i; break; }
+                    }
+                    if (idx < 0) continue; // 无可用屏
+                }
+                if (used.Contains(idx)) continue; // 该屏已被占用，跳过重复分配
+                used.Add(idx);
+                result.Add((a.Path, a.Type, idx));
+            }
+            return result;
         }
 
         /// <summary>判断当前前台是否为 Windows 锁屏/登录界面（LockApp / LogonUI）。
@@ -630,7 +648,12 @@ namespace DynamicWallpaper.Core
         public async Task SetWallpaperAsync(string path, WallpaperType type, int screenIndex = 0, bool save = true, Action<string>? status = null)
         {
             System.Threading.Interlocked.Increment(ref _opActive);
-            // 切换过渡流光：点击即显示（不等串行锁与后续加载），保证"点下去马上有反馈"
+            // 闪屏取证（r16）：从"点击设为壁纸"这一刻开始记录屏幕变化，
+            // 把"看不清闪的是什么"变成日志里的一行行数据（仅明显变化的帧才记），
+            // 用于区分：流光过渡层 / 桌面重组露底 / 应用窗口内部局部变化。
+            FlashProbe.Watch($"{Path.GetFileName(path)} 屏{screenIndex}");
+            // 切换过渡流光：会话开始（点击立即显示；任何类型的切换——含静态图原地换图——
+            // 都会播完一段完整的淡入/停留/淡出，见 SwitchOverlay）
             if (_states.TryGetValue(screenIndex, out var stEarly))
                 SwitchOverlay.Begin(screenIndex, stEarly.Bounds);
             System.Threading.CancellationToken opToken;
@@ -722,19 +745,30 @@ namespace DynamicWallpaper.Core
                     {
                         SetProviderRotation(vpImage, GetRotation(path));
                         bool navOk = await vpImage.NavigateImageAsync(path);
-                        bool ready = navOk && await vpImage.WaitVideoReadyAsync(TimeSpan.FromSeconds(6));
+                        // 超时从 6s 收紧到 2s：本地图片（含 8MB 大图）加载都是毫秒级，2s 内不就绪
+                        // 基本可判定本路径失败。实测 15/15 次都是等满 6s 后转冷启动——用户感受就是
+                        // “静态切静态很慢”，白等 6s 是主因。navOk=false 时短路，不再空等。
+                        // retryImageOnError：跨目录换图时虚拟主机映射（异步 IPC）尚未生效即请求
+                        // → 404 → onerror，实测 100% 复现；onerror 现在会被立即检测到并自动重试
+                        // 换图脚本（最多 3 次 × 300ms），成功则毫秒级完成，失败也快速转冷启动。
+                        bool ready = navOk && await vpImage.WaitVideoReadyAsync(TimeSpan.FromSeconds(2), retryImageOnError: true);
                         if (ready)
                         {
                             st.LastPath = path;
                             st.LastType = type;
                             st.IsStaticImage = true;
                             if (save) PersistAssignments();
+                            // 原地换图成功（零窗口重建、零闪动路径）——此前成功是静默的，
+                            // 出问题时无法区分"走了快速路径且正常"与"根本没走快速路径"。
+                            Logger.Log($"[WallpaperManager] 静态原地换图成功（无窗口重建）：{Path.GetFileName(path)} 旋转={GetRotation(path)}°");
                             status?.Invoke("已应用：" + Path.GetFileName(path));
                             return;
                         }
                         // 快速路径未就绪不再直接放弃（否则表现为"设置不成功、保持原壁纸"）：
-                        // 记日志后继续走下方冷启动路径（销毁重建静态层），保证一定能切过去。
-                        Logger.Log("[WallpaperManager] 静态图快速切换未就绪，转冷启动重建静态层");
+                        // 打诊断（图片元素是否存在/是否加载完/onerror 结果/当前地址）后继续走下方冷启动路径
+                        // （销毁重建静态层），保证一定能切过去。
+                        var diag = await vpImage.DiagnoseImageAsync();
+                        Logger.Log($"[WallpaperManager] 静态图快速切换未就绪（navOk={navOk}），转冷启动重建静态层。图片状态: {diag}");
                     }
 
                     // 静态壁纸即时显示：由 WebView2 静态层（VideoProvider 图片模式，虚拟主机映射
@@ -805,7 +839,14 @@ namespace DynamicWallpaper.Core
                                 var prevPath = st.LastPath;
                                 _ = System.Windows.Application.Current.Dispatcher.InvokeAsync(async () =>
                                 {
-                                    try { await prevImg.NavigateImageAsync(prevPath); }
+                                    try
+                                    {
+                                        // 回退重放换图同样要按原壁纸路径注入旋转角度（r14）：
+                                        // 该 Provider 随后被复用时 Rotation 若残留新壁纸的角度，
+                                        // 恢复出的旧壁纸会带错误旋转/布局。
+                                        SetProviderRotation(prevImg, GetRotation(prevPath));
+                                        await prevImg.NavigateImageAsync(prevPath);
+                                    }
                                     catch (Exception ex) { Logger.Log($"[WallpaperManager] 回退恢复旧静态层失败: {ex.Message}"); }
                                 });
                             }
@@ -818,16 +859,66 @@ namespace DynamicWallpaper.Core
                             status?.Invoke("切换失败：静态图加载未就绪（已保持原壁纸）");
                             return;
                         }
-                        // 就绪：窗口级 alpha 0→255 渐入（约 240ms），替代"直接置 255"的突兀弹出
-                        await Task.Run(async () =>
+                        // 就绪：把此前挂在父客户区之外的新静态层移入正确位置显示（旧壁纸在此之前一直可见）。
+                        // 原实现用窗口级 alpha 0→255 渐入，依赖 WS_EX_LAYERED；去掉分层后 alpha 调用无效，
+                        // 窗口会一直留在屏外 → 壁纸不显示，因此必须改为显式移入。
+                        // 移入前校验状态身份：等待期间状态若被重建（拓扑变化/快速连切），
+                        // st.Bounds 已是新拓扑尺寸而新窗口是旧尺寸——落位会造成"壁纸偏移左上角"。
+                        if (st.Provider != vpStatic)
                         {
-                            var hwnd = vpStatic.Handle;
-                            const int steps = 8;
-                            for (int i = 1; i <= steps; i++)
+                            Logger.Log("[WallpaperManager] 静态层就绪前状态已重建，销毁孤儿静态层并回滚");
+                            var orphanStatic = vpStatic;
+                            System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
                             {
-                                try { Win32.SetLayeredWindowAttributes(hwnd, 0, (byte)(255 * i / steps), Win32.LWA_ALPHA); } catch { }
-                                await Task.Delay(30);
+                                try { orphanStatic.Dispose(); } catch { }
+                            }, System.Windows.Threading.DispatcherPriority.Background);
+                            st.Provider = prevProvider;
+                            st.IsStaticImage = prevIsStaticImage;
+                            status?.Invoke("切换被打断（显示设置变化），已保持原壁纸");
+                            return;
+                        }
+                        WorkerWInjector.ShowWallpaperWindow(vpStatic.Handle, st.WorkerW, st.Bounds);
+                        // r17：移入后持续复核（父窗口归属/分层样式/Z 序沉在图标层之下/落位/渲染比例），
+                        // 异常即自愈——一次性设置会被系统异步副作用破坏，破坏后就是"图标被覆盖、
+                        // 右键不能用、壁纸偏移左上角"。身份守卫保证切换后作废。
+                        SchedulePlacementGuard(st, vpStatic, "静态层");
+
+                        // 移入后延时复核（fire-and-forget）：“壁纸偏移左上角”为间歇性残留状态，
+                        // 移入瞬间的落位校验（ShowWallpaperWindow 内）抓不到“移入后被再次移动”。
+                        // 2s 后比对实际矩形与期望矩形（父客户区换算），不符只记日志定位真凶，不自动改
+                        // （此刻若再 SetWindowPos 会与身份守卫/后续切换产生新的竞态）。
+                        var rvChild = vpStatic.Handle;
+                        var rvBounds = st.Bounds;
+                        _ = Task.Run(async () =>
+                        {
+                            await Task.Delay(2000);
+                            try
+                            {
+                                if (!Win32.IsWindow(rvChild)) return;
+                                if (!Win32.GetWindowRect(rvChild, out var rr)) return;
+                                int rw = rr.Width, rh = rr.Height;
+                                // GetWindowRect 返回**屏幕坐标**，期望值就是屏幕矩形 rvBounds。
+                                // （r17 修正：此前拿父客户区坐标 ex/ey 与屏幕坐标比较——父客户区原点
+                                // 不等于屏幕原点时会误报"偏差"，把正常的落位记成异常。）
+                                bool off = Math.Abs(rr.Left - rvBounds.X) > 2 || Math.Abs(rr.Top - rvBounds.Y) > 2 ||
+                                           Math.Abs(rw - rvBounds.Width) > 2 || Math.Abs(rh - rvBounds.Height) > 2;
+                                if (off)
+                                    Logger.Log($"[WallpaperManager] 移入2秒后复核偏差：期望 screen=({rvBounds.X},{rvBounds.Y}) size={rvBounds.Width}x{rvBounds.Height}，实际 pos=({rr.Left},{rr.Top}) size={rw}x{rh}（窗口在移入后被其他来源移动）");
+                                // WebView2 内部视图子窗口矩形（Chrome_WidgetWin_1 / 渲染层）：
+                                // 窗口几何全对而壁纸内容仍偏移时，偏移必发生在 WebView2 内部合成层——
+                                // 把视图层矩形打出来即可定位是"宿主窗口偏"还是"Chromium 视图偏"。
+                                var sb = new System.Text.StringBuilder();
+                                IntPtr c = IntPtr.Zero;
+                                int views = 0;
+                                while ((c = Win32.FindWindowEx(rvChild, c, null, null)) != IntPtr.Zero && views < 8)
+                                {
+                                    views++;
+                                    if (Win32.GetWindowRect(c, out var cr))
+                                        sb.Append($"{Win32.GetClassName(c)}=({cr.Left},{cr.Top},{cr.Width}x{cr.Height}) ");
+                                }
+                                Logger.Log($"[WallpaperManager] 移入2秒后视图层: 宿主=({rr.Left},{rr.Top},{rw}x{rh}) 子窗口[{views}]: {sb}");
                             }
+                            catch { }
                         });
                     }
                     // Win11 raised desktop（Progman 承载）下，WebView2 静态层作为 WS_EX_LAYERED 子窗口
@@ -848,13 +939,28 @@ namespace DynamicWallpaper.Core
 
                     // 销毁旧壁纸（动态 A 或旧静态层），静态 WebView2 层已就绪，无残留。
                     // 异步销毁不等待：WebView2 销毁可能长时间阻塞，同步等待会让切换无响应。
+                    //
+                    // r15：销毁前多留 250ms —— 新层此刻刚被 SetWindowPos 移入，DWM 需要 1~3 帧
+                    // 才会把它真正合成到桌面；若旧层在这几帧内就被销毁，画面会出现"新旧皆无"的
+                    // 空档，露出底层（系统壁纸）→ 用户看到的"切壁纸闪一下"。旧层此时位于新层
+                    // 之下（新层 move in 时置于 Z 序顶部），多留一会儿完全不可见、无副作用。
+                    // 动态路径的 CrossfadeAsync 本身有 300ms 交接期，此处补齐静态路径的差额。
                     if (prevProvider != null)
                     {
-                        System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                        var staleProvider = prevProvider;
+                        _ = Task.Run(async () =>
                         {
-                            try { prevProvider.Dispose(); }
-                            catch (Exception ex) { Logger.Log($"[WallpaperManager] 旧壁纸 Dispose 异常: {ex.Message}"); }
-                        }, System.Windows.Threading.DispatcherPriority.Background);
+                            try { await Task.Delay(250); } catch { }
+                            try
+                            {
+                                System.Windows.Application.Current?.Dispatcher.InvokeAsync(() =>
+                                {
+                                    try { staleProvider.Dispose(); }
+                                    catch (Exception ex) { Logger.Log($"[WallpaperManager] 旧壁纸 Dispose 异常: {ex.Message}"); }
+                                }, System.Windows.Threading.DispatcherPriority.Background);
+                            }
+                            catch { /* 程序退出中：Dispatcher 已关闭，交给进程回收 */ }
+                        });
                     }
 
                     // 清掉旧的 WPF 静态复用层（新方案不再创建，仅清理历史遗留）
@@ -1011,6 +1117,10 @@ namespace DynamicWallpaper.Core
                             WorkerWInjector.ForceDwmComposition(hwnd, st.WorkerW, st.Bounds);
                         }
                     });
+                    // 【注意】此前这里在 raised desktop 下会再等 1500ms 补一次 ForceDwmComposition。
+                    // 该二次合成会再跑一次 SetParent/SetWindowPos，造成切换后第二次重排/闪烁，
+                    // 属老版本闪屏回归的一部分，已移除。非分层子窗口挂到背景 WorkerW 后 DWM 常规
+                    // 合成、首帧本就可见，无需二次补救。
                 });
 
                 // 叠化过渡：统一走 CrossfadeAsync（动态→动态：新旧窗口 alpha 叠化；
@@ -1079,7 +1189,22 @@ namespace DynamicWallpaper.Core
                 }
                 catch (Exception ex) { Logger.Log($"[Crossfade] 等待就绪异常（继续显示）: {ex.Message}"); }
             }
-            if (st.Provider == null) return false; // 等待期间壁纸被清除/切换，中止过渡
+            if (st.Provider == null || st.Provider != provider)
+            {
+                // 等待期间壁纸状态被清除/重建（显示器拓扑变化、快速连切）：
+                // 此时的 st.Bounds 可能已是【新拓扑的尺寸】，而新窗口是按【旧 Bounds】创建的——
+                // 若继续落位，旧尺寸窗口会摆进新桌面 → 表现为"壁纸偏移到桌面左上角、
+                // 切换别的壁纸再切回来又正常"（日志/截图实证）。因此这里必须中止：
+                // 销毁孤儿化的新窗口，返回 false 让调用方回滚。
+                Logger.Log("[Crossfade] 等待期间壁纸状态已重建/清除，中止本次切换（防旧尺寸窗口落位）");
+                var orphaned = provider;
+                System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    try { orphaned?.Dispose(); }
+                    catch (Exception ex) { Logger.Log($"[WallpaperManager] 孤儿新壁纸 Dispose 异常: {ex.Message}"); }
+                }, System.Windows.Threading.DispatcherPriority.Background);
+                return false;
+            }
 
             // 就绪检查：内容真正可显示才叠化。未就绪（网络壁纸加载挂起、签名过期、网络不可达等）
             // 时回滚——销毁未就绪的新窗口（异步，不阻塞），旧壁纸继续显示，锁立即释放，
@@ -1102,6 +1227,27 @@ namespace DynamicWallpaper.Core
                 }, System.Windows.Threading.DispatcherPriority.Background);
                 return false;
             }
+
+            // 【内容已就绪 + 状态未变】把此前挂在父客户区之外的新窗口移入正确位置显示。
+            // 此刻旧壁纸仍完好可见 → 新旧瞬间交接，不会闪出空白帧/底层系统壁纸。
+            // 这是去掉 WS_EX_LAYERED 之后，老版本“就绪前保持透明（露出旧壁纸）”的等价实现：
+            // 原实现靠 SetLayeredWindowAttributes(alpha=0) 隐藏，非分层窗口上该调用无效，
+            // 因此必须在就绪这一刻显式移入，否则窗口会一直留在屏外（壁纸不显示）。
+            // 就绪检查的 await 期间状态仍可能被重建（拓扑变化/快速连切），移入前最后校验一次：
+            if (st.Provider != provider)
+            {
+                Logger.Log("[Crossfade] 就绪检查期间壁纸状态已重建，中止移入（防旧尺寸窗口落位）");
+                var orphaned2 = provider;
+                System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    try { orphaned2?.Dispose(); }
+                    catch (Exception ex) { Logger.Log($"[WallpaperManager] 孤儿新壁纸 Dispose 异常: {ex.Message}"); }
+                }, System.Windows.Threading.DispatcherPriority.Background);
+                return false;
+            }
+            WorkerWInjector.ShowWallpaperWindow(newHwnd, st.WorkerW, st.Bounds);
+            // r17：移入后持续复核（同静态层），自愈"图标被覆盖/右键失效/壁纸偏移"。
+            SchedulePlacementGuard(st, provider, "动态层");
 
             // 旧 Provider 的 Handle 必须在 UI 线程获取（WPF 窗口/WindowInteropHelper 有线程亲和性），
             // 后台渐变线程直接访问 oldProvider.Handle 会抛“调用线程无法访问此对象”。
@@ -1319,12 +1465,11 @@ namespace DynamicWallpaper.Core
                 // 原本压在注入层之下的系统静态壁纸会自然透出来，无需任何刷新。
                 st.WorkerW = IntPtr.Zero;
 
-                // 解除任意壁纸后强制桌面重绘：WebProvider 等从未走 ForceDwmComposition 的层
-                // 在摘离后 DWM 合成状态可能停留，导致桌面黑屏（即便系统壁纸已是原壁纸、
-                // RestoreSystemWallpaper 正确跳过，画面仍未重绘）。此刷新触发 DWM 重新合成底层
-                // 静态壁纸，使其透出。对所有壁纸类型统一执行，安全无害。
-                if (restoreWallpaper)
-                    WorkerWInjector.RefreshDesktop();
+                // 解除壁纸【不做图标层 SW_HIDE→SW_SHOW 刷新】——那是整个桌面（图标+壁纸）
+                // 闪一下的直接原因（用户可见的"解除时闪动"）。非分层壁纸窗口撤走后，DWM
+                // 常规合成自然透出下层内容；下方 RestoreSystemWallpaper(forceRepaint) 会
+                // 通过 SPI/IDesktopWallpaper 触发系统级重绘，无需（也不能）再闪图标层。
+                // if (restoreWallpaper) WorkerWInjector.RefreshDesktop();
 
                 // 解除/退出时必须把系统原壁纸再设一遍，强制桌面重绘：
                 // 即使注册表里的 Wallpaper 值看起来已经是原壁纸，DWM 仍可能因为窗口层残留
@@ -1448,6 +1593,38 @@ namespace DynamicWallpaper.Core
             {
                 Logger.Log($"[WallpaperManager] 恢复系统壁纸失败: {ex.Message}");
             }
+        }
+
+        /// <summary>移入显示后的持续复核（r17）：+300ms / +1200ms / +3000ms 三档复核壁纸窗口的
+        /// 挂载关系（父窗口归属 / 分层样式 / Z 序沉在图标层之下 / 落位矩形）与渲染比例
+        /// （页面视口×devicePixelRatio = 宿主客户区像素），发现问题立即自愈并记日志。
+        /// 挂载关系是切换时一次性设置的，之后会被系统异步副作用破坏（SetParent 回挂把子窗口
+        /// 顶到 Z 序顶部、explorer 重建 SHELLDLL_DefView、桌面重绘、另一份副本互抢承载层），
+        /// 破坏后的现象正是用户报的"桌面图标被覆盖、右键不能用、壁纸偏移只占左上角一块"。
+        /// 身份守卫：期间若已切到别的壁纸/状态被重建，本次复核立即作废——否则会把已停放在屏外
+        /// 的旧窗口重新落位，闪出旧壁纸。幂等、后台执行、绝不影响切换时序。</summary>
+        private static void SchedulePlacementGuard(ScreenState stRef, IWallpaperProvider provider, string tag)
+        {
+            var child = provider.Handle;
+            if (child == IntPtr.Zero) return;
+            _ = Task.Run(async () =>
+            {
+                int waited = 0;
+                foreach (int gap in new[] { 300, 900, 1800 })
+                {
+                    try { await Task.Delay(gap); } catch { }
+                    waited += gap;
+                    try
+                    {
+                        if (!ReferenceEquals(stRef.Provider, provider)) return;
+                        if (!Win32.IsWindow(child)) return;
+                        WorkerWInjector.EnsurePlacement(child, stRef.WorkerW, stRef.Bounds, $"{tag}+{waited}ms");
+                        if (provider is VideoProvider vp)
+                            await vp.VerifyRenderScaleAsync($"{tag}+{waited}ms");
+                    }
+                    catch { /* 复核绝不影响壁纸显示 */ }
+                }
+            });
         }
 
         /// <summary>把当前各屏壁纸分配持久化：全局 Assignments 始终更新（关闭按桌面记忆时回退使用）；
@@ -1587,6 +1764,9 @@ namespace DynamicWallpaper.Core
             if (ScreenManager.Count != _states.Count || sig != _lastScreenSig)
             {
                 Logger.Log($"[Watchdog] 显示器拓扑变化，重建屏幕表并恢复壁纸：{_lastScreenSig} → {sig}");
+                // 拓扑变化后 explorer 会重建/隐藏桌面 WorkerW 结构，旧承载层句柄多半已失效或
+                // 被隐藏（复用会导致壁纸不显示、坐标错位）。无条件失效缓存，强制重新探测。
+                try { WorkerWInjector.InvalidateCache(); } catch { }
                 // 重建前先销毁旧 Provider/静态层窗口，避免泄漏（旧窗口挂在 Progman 上
                 // 会以旧 bounds 继续解码播放，遮挡/干扰新窗口）
                 foreach (var st in _states.Values)

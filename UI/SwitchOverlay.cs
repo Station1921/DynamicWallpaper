@@ -18,8 +18,12 @@ namespace DynamicWallpaper
     ///
     /// - 透明 + 点击穿透（WS_EX_TRANSPARENT）+ 不激活不抢焦点（WS_EX_NOACTIVATE），
     ///   不影响桌面/应用任何交互；Topmost 仅在切换的数秒内存在。
-    /// - 点击"设为壁纸"即显示（不等下载/加载），140ms 淡入；最短可见 420ms 避免快切一闪而过；
-    ///   切换完成后 200ms 淡出。
+    /// - 【r18 定稿时序】点击那一刻立即显示（"立即响应"是硬要求，r16 的 320ms 延迟门
+    ///   会让动画在切换完成后才播，已被用户否掉），但保证一次【完整】的过渡：
+    ///   淡入 140ms 迅速稳定到全不透明 → 保持 ≥360ms（自淡入完成起算，End 早到也不打断淡入）
+    ///   → 260ms 淡出。任何切换（含静态图原地换图）都播完整段，全程约 500~760ms。
+    ///   r16 前"松手一瞬间闪一下"的机制正是：淡入尚未走完 End 就到了，过渡层只能到达
+    ///   半透明便开始淡出——半亮的层一闪而过，观感就是"闪"而不是"过渡"。
     /// - 按屏幕索引管理会话：SetWallpaperAsync 进入时 Begin，finally 中 End。
     /// </summary>
     public static class SwitchOverlay
@@ -38,20 +42,32 @@ namespace DynamicWallpaper
 
         private sealed class Session
         {
-            public System.Threading.CancellationTokenSource? DelayCts;
             public Window? Window;
+            public DateTime StartedAtUtc;
             public DateTime ShownAtUtc;
+            /// <summary>淡入动画真正开始（首帧渲染完成）的时刻；未开始则为 default。</summary>
+            public DateTime FadeStartUtc;
+            /// <summary>会话已结束、淡出流程已启动：此后绝不能再开始淡入（否则淡入会覆盖
+            /// 正在进行的淡出动画，Completed 不再触发 → 过渡层永不关闭）。</summary>
+            public bool Closing;
         }
 
         private static readonly object Gate = new();
         private static readonly Dictionary<int, Session> Sessions = new();
 
-        /// <summary>进入切换会话时立即显示流光（点击后马上有反馈）。</summary>
+        /// <summary>淡入时长（r18：480→140ms）。过渡层必须"迅速而确定地出现"：
+        /// 淡入过慢 → 半透明的层在屏幕上停留过久，观感从"正在切换"退化为"闪了一下"。</summary>
         private const int FadeInMs = 140;
-        /// <summary>最短可见时长：极快切换也至少停留这么久，避免一闪而过的抖动感。</summary>
-        private const int MinVisibleMs = 420;
+        /// <summary>淡出时长。</summary>
+        private const int FadeOutMs = 260;
+        /// <summary>最短可见时长（自【淡入完成】起算）。保证任何一次切换——哪怕 100ms 就
+        /// 完成的本地静态图原地换图——都有一段完整、可感知的过渡，而不是一闪而过。</summary>
+        private const int MinVisibleMs = 360;
 
-        /// <summary>开始一次切换过渡会话：立即显示流光（点击"设为壁纸"就响应）。</summary>
+        /// <summary>开始一次切换过渡会话：**点击那一刻立即显示**（不延迟、不等就绪）。
+        /// r16 曾加 320ms 延迟门以避免"松手一瞬间闪一下"，但那让本地快速切换的动画
+        /// "切换都完成了才开始播"，失去意义——已被用户明确否掉。
+        /// r18 改为：立即出现（一次完整过渡）+ 不打断淡入（见 End），两个诉求同时满足。</summary>
         public static void Begin(int screenIndex, Rectangle bounds)
         {
             var disp = System.Windows.Application.Current?.Dispatcher;
@@ -60,23 +76,29 @@ namespace DynamicWallpaper
 
             lock (Gate)
             {
-                // 同屏已有会话（上一场尚未结束）：复用其窗口，不重置延迟
-                if (Sessions.TryGetValue(screenIndex, out var existing))
-                {
-                    try { existing.DelayCts?.Cancel(); } catch { }
-                    existing.DelayCts = new System.Threading.CancellationTokenSource();
-                    return;
-                }
-                var cts = new System.Threading.CancellationTokenSource();
-                Sessions[screenIndex] = new Session { DelayCts = cts };
-                // Send（最高）优先级：即使 UI 线程正在忙于建窗口/初始化 WebView2 的普通优先级队列，
-                // 也优先把流光挂上屏幕，避免"切换完了才看到动画"
-                _ = disp.InvokeAsync(() => ShowCore(screenIndex, bounds, cts.Token),
+                // 同屏已有会话（上一场尚未结束）：沿用，不重复建窗、不重置计时
+                if (Sessions.ContainsKey(screenIndex)) return;
+                Sessions[screenIndex] = new Session { StartedAtUtc = DateTime.UtcNow };
+            }
+
+            // Send（最高）优先级挂窗口：即使 UI 线程正忙于建窗口/初始化 WebView2，
+            // 也优先把过渡层铺上屏幕——"点下去立即有反馈"。
+            try
+            {
+                _ = disp.InvokeAsync(() => ShowCore(screenIndex, bounds),
                     System.Windows.Threading.DispatcherPriority.Send);
             }
+            catch { /* 程序退出中：Dispatcher 已关闭 */ }
         }
 
-        /// <summary>结束会话：取消尚未显示的流光；已显示的按最短可见时长停留后淡出关闭。</summary>
+        /// <summary>结束会话：**绝不打断淡入**——最短可见时长自"淡入完成"起算，
+        /// End 早到（本地快速切换 100~300ms 即完成）时也要等淡入走完再停留、再淡出，
+        /// 保证屏幕上出现的永远是一段完整过渡，而不是"半透明地闪一下"。
+        /// 【r20】End 若抢在首帧淡入之前到达（静切静原地换图仅 50~90ms，ContentRendered
+        /// 还没来得及触发），必须**先强制启动淡入**再计时收尾——否则过渡层全程 Opacity=0
+        /// 不可见，用户看到的就是"静切静没有流光动画"（r18 的 Closing 守卫会拦住
+        /// ContentRendered 的淡入，窗口静默挂 500ms 后透明关闭）。
+        /// 若窗口尚未建出（同一帧内开始即结束）则直接取消，屏幕零变化。</summary>
         public static void End(int screenIndex)
         {
             var disp = System.Windows.Application.Current?.Dispatcher;
@@ -88,19 +110,44 @@ namespace DynamicWallpaper
             {
                 if (!Sessions.TryGetValue(screenIndex, out s)) return;
                 Sessions.Remove(screenIndex);
+                s.Closing = true;   // 关掉"首帧到达后开始淡入"的门，防止覆盖淡出动画
             }
-            try { s.DelayCts?.Cancel(); s.DelayCts?.Dispose(); } catch { }
-            var w = s.Window;
-            if (w == null) return;
 
-            int elapsed = (int)(DateTime.UtcNow - s.ShownAtUtc).TotalMilliseconds;
-            int wait = Math.Max(0, MinVisibleMs - elapsed);
+            int elapsed = (int)(DateTime.UtcNow - s.StartedAtUtc).TotalMilliseconds;
+            var w = s.Window;
+            if (w == null)
+            {
+                Logger.Log($"[SwitchOverlay] 屏{screenIndex} 未显示过渡层：切换在 {elapsed}ms 内完成且窗口尚未建出（屏幕零变化）");
+                return;
+            }
+
             _ = disp.InvokeAsync(async () =>
             {
+                // r20：淡入尚未开始（End 抢在 ContentRendered 之前到达）→ 立即强制启动淡入。
+                // Closing 守卫只拦 ContentRendered/fallback 那条路径，不拦这里；
+                // 且 FadeStartUtc 置位后 ContentRendered 的 StartFade 也不会重复淡入。
+                if (s.FadeStartUtc == default)
+                {
+                    s.FadeStartUtc = DateTime.UtcNow;
+                    Logger.Log($"[SwitchOverlay] 屏{screenIndex} End 抢在首帧渲染前到达（切换仅 {elapsed}ms），强制启动淡入：过渡层将完整可见");
+                    try
+                    {
+                        var fadeIn = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(FadeInMs))
+                        {
+                            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+                        };
+                        w.BeginAnimation(UIElement.OpacityProperty, fadeIn);
+                    }
+                    catch { }
+                }
+                // 基准时刻取"淡入真正开始"的时刻：保证 淡入140ms + 停留360ms 完整播完再淡出
+                int shown = (int)(DateTime.UtcNow - s.FadeStartUtc).TotalMilliseconds;
+                int wait = Math.Max(0, FadeInMs + MinVisibleMs - shown);
+                Logger.Log($"[SwitchOverlay] 屏{screenIndex} 过渡层收尾：切换共 {elapsed}ms，淡入起已 {shown}ms，再停留 {wait}ms 后 {FadeOutMs}ms 淡出（总时长约 {elapsed + wait + FadeOutMs}ms）");
                 try { if (wait > 0) await Task.Delay(wait); } catch { }
                 try
                 {
-                    var fade = new DoubleAnimation(w.Opacity, 0, TimeSpan.FromMilliseconds(200))
+                    var fade = new DoubleAnimation(w.Opacity, 0, TimeSpan.FromMilliseconds(FadeOutMs))
                     {
                         EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
                     };
@@ -111,25 +158,55 @@ namespace DynamicWallpaper
             });
         }
 
-        private static void ShowCore(int screenIndex, Rectangle bounds, System.Threading.CancellationToken ct)
+        private static void ShowCore(int screenIndex, Rectangle bounds)
         {
             lock (Gate)
             {
-                // End 已先到（切换极快结束）：不再显示
-                if (ct.IsCancellationRequested || !Sessions.TryGetValue(screenIndex, out var s) || s.DelayCts == null || s.Window != null)
+                // 会话已结束（同一帧内开始即结束）或本会话窗口已建出 → 不显示
+                if (!Sessions.TryGetValue(screenIndex, out var s) || s.Window != null)
                     return;
                 try
                 {
                     var w = BuildWindow(bounds);
-                    w.Opacity = 0;
                     s.Window = w;
-                    w.Show();
+                    // 【两步显示】① 先以 Opacity=0 把窗口挂上（此时完全不可见）；
+                    // ② 等首帧真正渲染完成（ContentRendered）再开始淡入。
+                    // 透明分层窗口"刚 Show 出来"的那一帧若被 DWM 提前合成，屏幕上会闪过
+                    // 一块未初始化的不透明内容——"松手一瞬间闪一下"的另一可能来源。
+                    w.Opacity = 0;
                     s.ShownAtUtc = DateTime.UtcNow;
-                    var fadeIn = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(FadeInMs))
+                    bool fadeStarted = false;
+                    void StartFade()
                     {
-                        EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+                        if (fadeStarted) return;
+                        fadeStarted = true;
+                        lock (Gate)
+                        {
+                            // 会话已结束（End 已启动淡出）或窗口已换 → 不淡入；
+                            // 否则淡入动画会覆盖正在进行的淡出，过渡层将永远留在屏幕上。
+                            if (s.Closing || !ReferenceEquals(s.Window, w)) return;
+                            s.FadeStartUtc = DateTime.UtcNow;
+                        }
+                        try
+                        {
+                            var fadeIn = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(FadeInMs))
+                            {
+                                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+                            };
+                            w.BeginAnimation(UIElement.OpacityProperty, fadeIn);
+                        }
+                        catch { }
+                    }
+                    w.ContentRendered += (_, _) => StartFade();
+                    w.Show();
+                    // 兜底：极端情况下 ContentRendered 不触发也必须淡入，否则流光永不出现
+                    var fallback = new System.Windows.Threading.DispatcherTimer(
+                        System.Windows.Threading.DispatcherPriority.Background)
+                    {
+                        Interval = TimeSpan.FromMilliseconds(220)
                     };
-                    w.BeginAnimation(UIElement.OpacityProperty, fadeIn);
+                    fallback.Tick += (_, _) => { try { fallback.Stop(); } catch { } StartFade(); };
+                    fallback.Start();
                 }
                 catch (Exception ex)
                 {
